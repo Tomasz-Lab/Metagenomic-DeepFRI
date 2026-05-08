@@ -18,6 +18,7 @@ Attributes:
 """
 
 import csv
+import datetime
 import logging
 import pathlib
 import pickle
@@ -348,7 +349,9 @@ def predict_protein_function(
         save_structures: bool = False,
         save_cmaps: bool = False,
         skip_matrix: bool = False,
-        scoring_matrix: str = "VTML80"):
+        scoring_matrix: str = "VTML80",
+        command_str: Optional[str] = None,
+        version: Optional[str] = None):
     """
     Predict protein function using DeepFRI.
 
@@ -384,6 +387,10 @@ def predict_protein_function(
             Defaults to False.
         scoring_matrix (str, optional): Scoring matrix for alignment.
             Defaults to "VTML80".
+        command_str (str, optional): The original command-line invocation.
+            Defaults to None.
+        version (str, optional): The version of mDeepFRI.
+            Defaults to None.
 
     Returns:
         None: Results are written to files in output_path.
@@ -622,6 +629,18 @@ def predict_protein_function(
 
     final_output = output_path / "results.tsv"
     with open(final_output, "w", encoding="utf-8") as fout:
+        # Write metadata at the beginning
+        if command_str is not None or version is not None:
+            # Write timestamp
+            timestamp = datetime.datetime.now().strftime(
+                "%a %b %d %H:%M:%S %Y")
+            fout.write(f"## {timestamp}\n")
+            # Write version
+            if version is not None:
+                fout.write(f"## mDeepFRI-{version}\n")
+            # Write command string
+            if command_str is not None:
+                fout.write(f"## {command_str}\n")
         fout.write("\t".join(FINAL_OUTPUT_HEADER) + "\n")
         for mode, matrix_source in matrices.items():
             json_path = json_configs[mode]

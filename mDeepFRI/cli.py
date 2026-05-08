@@ -461,6 +461,10 @@ def predict_function(ctx, input, db_path, weights, output, processing_modes,
                                  min_length=min_length,
                                  max_length=max_length)
 
+    # Reconstruct command string for metadata
+    command_str = " ".join(sys.argv)
+    version_str = importlib.metadata.version("mDeepFRI")
+
     predict_protein_function(
         query_file=query_file,
         databases=deepfri_dbs,
@@ -475,7 +479,9 @@ def predict_function(ctx, input, db_path, weights, output, processing_modes,
         save_structures=save_structures,
         save_cmaps=save_cmaps,
         skip_matrix=skip_matrix,
-        scoring_matrix=scoring_matrix)
+        scoring_matrix=scoring_matrix,
+        command_str=command_str,
+        version=version_str)
 
 
 @main.command()
