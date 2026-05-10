@@ -1,5 +1,6 @@
 # project specific files
 data/
+!mDeepFRI/tests/data
 benchmark_temp/
 benchmark_temp_gpu/
 emapper*/

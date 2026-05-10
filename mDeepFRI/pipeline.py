@@ -19,6 +19,7 @@ Attributes:
 
 import csv
 import datetime
+import io
 import logging
 import pathlib
 import pickle
@@ -31,8 +32,10 @@ import numpy as np
 from tqdm import tqdm
 
 from mDeepFRI import DEEPFRI_MODES
-from mDeepFRI.alignment import align_mmseqs_results
-from mDeepFRI.bio_utils import build_align_contact_map
+from mDeepFRI.alignment import (AlignmentResult, align_mmseqs_results,
+                                align_pairwise)
+from mDeepFRI.bio_utils import (build_align_contact_map,
+                                extract_residues_coordinates)
 from mDeepFRI.database import Database, build_database
 from mDeepFRI.mmseqs import MMseqsResult, QueryFile
 from mDeepFRI.pdb import create_pdb_mmseqs, extract_calpha_coords
@@ -282,8 +285,171 @@ def hierarchical_database_search(query_file: QueryFile,
     return dbs
 
 
-def align_pairwise():
-    pass
+def load_custom_alignments_from_mapping(
+        mapping_file: str,
+        query_file: QueryFile,
+        alignment_gap_open: float = 10,
+        alignment_gap_extend: float = 1,
+        scoring_matrix: str = "VTML80",
+        angstrom_contact_threshold: float = 6,
+        generate_contacts: int = 2,
+        threads: int = 1) -> List[Tuple[AlignmentResult, np.ndarray]]:
+    """
+    Load custom alignments from a mapping file that associates proteins with structures.
+
+    This function enables bypassing the hierarchical database search by providing pre-computed
+    sequence-to-structure mappings. It performs pairwise alignment between query sequences
+    and structure sequences, extracts coordinates, and generates contact maps.
+
+    Args:
+        mapping_file (str): Path to TSV file with format: protein_id<tab>structure_path
+            Skip the header line. Structure paths can be relative or absolute.
+            Supported formats: CIF (mmcif), PDB.
+        query_file (QueryFile): QueryFile object containing query sequences.
+        alignment_gap_open (float, optional): Gap open penalty for sequence alignment.
+            Defaults to 10.
+        alignment_gap_extend (float, optional): Gap extension penalty for sequence alignment.
+            Defaults to 1.
+        scoring_matrix (str, optional): Scoring matrix for sequence alignment.
+            Defaults to "VTML80".
+        angstrom_contact_threshold (float, optional): Distance threshold in Angstroms
+            for generating contact maps. Defaults to 6.
+        generate_contacts (int, optional): Gap for generating contacts in gapped regions.
+            Defaults to 2.
+        threads (int, optional): Number of threads for parallel processing.
+            Defaults to 1.
+
+    Returns:
+        List[Tuple[AlignmentResult, np.ndarray]]: List of tuples containing:
+            - AlignmentResult: Pairwise alignment with real metrics (identity, coverage)
+            - np.ndarray: Aligned contact map
+
+    Example:
+        >>> qf = QueryFile("proteins.faa")
+        >>> qf.load_sequences()
+        >>> alignments = load_custom_alignments_from_mapping(
+        ...     "mapping.tsv",
+        ...     qf,
+        ...     alignment_gap_open=10,
+        ...     alignment_gap_extend=1
+        ... )
+
+    Notes:
+        - All proteins with mappings are treated as "aligned" and processed with GCN
+        - Unmapped proteins will be skipped with a warning
+        - Structure files must be accessible and loadable
+        - Both CIF and PDB formats are supported
+    """
+
+    # Load the mapping file
+    mapping = {}
+    mapping_path = pathlib.Path(mapping_file)
+
+    if not mapping_path.exists():
+        raise FileNotFoundError(f"Mapping file not found: {mapping_file}")
+
+    with open(mapping_path, "r", encoding="utf-8") as f:
+        reader = csv.reader(f, delimiter="\t")
+        next(reader)  # Skip header
+        for row in reader:
+            if len(row) < 2:
+                logger.warning(f"Skipping malformed mapping line: {row}")
+                continue
+            protein_id, structure_path = row[0], row[1]
+            # Handle relative paths relative to the mapping file directory
+            struct_path = pathlib.Path(structure_path)
+            if not struct_path.is_absolute():
+                struct_path = mapping_path.parent / struct_path
+            mapping[protein_id] = str(struct_path)
+
+    logger.info(f"Loaded {len(mapping)} protein-to-structure mappings.")
+
+    aligned_cmaps = []
+
+    for query_id, query_sequence in query_file.sequences.items():
+        if query_id not in mapping:
+            logger.warning(
+                f"Protein {query_id} not found in mapping; skipping.")
+            continue
+
+        structure_path = mapping[query_id]
+        struct_path_obj = pathlib.Path(structure_path)
+
+        if not struct_path_obj.exists():
+            logger.warning(
+                f"Structure file not found: {structure_path}; skipping {query_id}."
+            )
+            continue
+
+        try:
+            # Load structure file
+            with open(structure_path, "r", encoding="utf-8") as f:
+                structure_string = f.read()
+
+            # Determine file type from extension
+            if structure_path.endswith('.cif') or structure_path.endswith(
+                    '.mmcif'):
+                filetype = "mmcif"
+            elif structure_path.endswith('.pdb'):
+                filetype = "pdb"
+            else:
+                logger.warning(
+                    f"Unknown file type for {structure_path}; assuming CIF format."
+                )
+                filetype = "mmcif"
+
+            # Extract target sequence and coordinates
+            target_sequence, coords = extract_residues_coordinates(
+                structure_string, chain="A", filetype=filetype)
+
+            if target_sequence is None or coords is None:
+                logger.warning(
+                    f"Failed to extract structure information from {structure_path}; "
+                    f"skipping {query_id}.")
+                continue
+
+            # Perform pairwise alignment
+            alignment_string, identity, query_coverage, target_coverage = align_pairwise(
+                query_sequence,
+                target_sequence,
+                gap_open=int(alignment_gap_open),
+                gap_extend=int(alignment_gap_extend),
+                scoring_matrix=scoring_matrix)
+
+            # Create AlignmentResult object
+            alignment_result = AlignmentResult(
+                query_name=query_id,
+                query_sequence=query_sequence,
+                target_name=struct_path_obj.
+                stem,  # Use filename without extension
+                target_sequence=target_sequence,
+                alignment=alignment_string,
+                query_identity=identity,
+                query_coverage=query_coverage,
+                target_coverage=target_coverage,
+                db_name="custom_mapping",
+                coords=coords)
+
+            # Build contact map
+            aligned_cmap = build_align_contact_map(
+                alignment_result,
+                threshold=angstrom_contact_threshold,
+                generated_contacts=generate_contacts)
+
+            aligned_cmaps.append(aligned_cmap)
+
+            logger.info(
+                f"Processed {query_id}: aligned to {struct_path_obj.stem} "
+                f"(identity={identity:.3f}, query_cov={query_coverage:.3f})")
+
+        except Exception as e:
+            logger.warning(f"Error processing {query_id}: {str(e)}; skipping.")
+            continue
+
+    logger.info(
+        f"Successfully loaded {len(aligned_cmaps)} alignments from custom mapping."
+    )
+    return aligned_cmaps
 
 
 def _initialize_processing_modes(modes: List[str],
@@ -336,9 +502,9 @@ def _run_prediction_loop(predictor, data_iterable: iter, data_len: int,
 
 def predict_protein_function(
         query_file: QueryFile,
-        databases: Tuple[Database],
-        weights: str,
-        output_path: str,
+        databases: Tuple[Database] = (),
+        weights: str = "",
+        output_path: str = "",
         deepfri_processing_modes: List[str] = ["ec", "bp", "mf", "cc"],
         angstrom_contact_threshold: float = 6,
         generate_contacts: int = 2,
@@ -351,7 +517,8 @@ def predict_protein_function(
         skip_matrix: bool = False,
         scoring_matrix: str = "VTML80",
         command_str: Optional[str] = None,
-        version: Optional[str] = None):
+        version: Optional[str] = None,
+        custom_mapping_file: Optional[str] = None):
     """
     Predict protein function using DeepFRI.
 
@@ -359,9 +526,15 @@ def predict_protein_function(
     query sequences to databases, generates contact maps, and runs DeepFRI
     predictions for specified functional categories.
 
+    Can operate in two modes:
+    1. Hierarchical database search mode (default): searches query_file against databases
+    2. Custom mapping mode: uses pre-computed sequence-to-structure mappings
+
     Args:
         query_file (QueryFile): Object containing query sequences.
-        databases (Tuple[Database]): Tuple of database objects to search against.
+        databases (Tuple[Database], optional): Tuple of database objects to search against.
+            Only used if custom_mapping_file is not provided.
+            Defaults to empty tuple.
         weights (str): Path to folder containing DeepFRI model weights.
         output_path (str): Path to directory for saving results.
         deepfri_processing_modes (List[str], optional): List of modes to predict.
@@ -391,12 +564,18 @@ def predict_protein_function(
             Defaults to None.
         version (str, optional): The version of mDeepFRI.
             Defaults to None.
+        custom_mapping_file (str, optional): Path to TSV file with protein-to-structure mappings.
+            Format: protein_id<tab>structure_path (skip header).
+            When provided, bypasses hierarchical database search. All proteins with mappings
+            are processed with GCN (structure-based prediction).
+            Defaults to None (use databases).
 
     Returns:
         None: Results are written to files in output_path.
 
     See Also:
         hierarchical_database_search: For the initial search step.
+        load_custom_alignments_from_mapping: For custom mapping implementation.
     """
 
     # load DeepFRI model
@@ -409,103 +588,121 @@ def predict_protein_function(
     output_path.mkdir(parents=True, exist_ok=True)
 
     aligned_cmaps = []
-    for db in databases:
-        # SEQUENCE ALIGNMENT
-        # calculate already aligned sequences
-        alignments = align_mmseqs_results(
-            best_matches_filepath=db.mmseqs_result,
-            sequence_db=db.sequence_db,
+
+    # Use custom mapping if provided, otherwise use hierarchical database search
+    if custom_mapping_file:
+        logger.info(
+            f"Using custom sequence-to-structure mapping from {custom_mapping_file}"
+        )
+        aligned_cmaps = load_custom_alignments_from_mapping(
+            mapping_file=custom_mapping_file,
+            query_file=query_file,
             alignment_gap_open=alignment_gap_open,
             alignment_gap_extend=alignment_gap_continuation,
-            threads=threads,
-            scoring_matrix=scoring_matrix)
+            scoring_matrix=scoring_matrix,
+            angstrom_contact_threshold=angstrom_contact_threshold,
+            generate_contacts=generate_contacts,
+            threads=threads)
+    else:
+        # Standard hierarchical database search
+        for db in databases:
+            # SEQUENCE ALIGNMENT
+            # calculate already aligned sequences
+            alignments = align_mmseqs_results(
+                best_matches_filepath=db.mmseqs_result,
+                sequence_db=db.sequence_db,
+                alignment_gap_open=alignment_gap_open,
+                alignment_gap_extend=alignment_gap_continuation,
+                threads=threads,
+                scoring_matrix=scoring_matrix)
 
-        try:
-            # set a db name for alignments
-            for aln in alignments:
-                aln.db_name = db.name
+            try:
+                # set a db name for alignments
+                for aln in alignments:
+                    aln.db_name = db.name
 
-            aligned_queries = [aln[0].query_name for aln in aligned_cmaps]
-            new_alignments = {
-                aln.query_name: aln
-                for aln in alignments if aln.query_name not in aligned_queries
-                and aln.query_name in query_file.sequences
-            }
-
-            # CONTACT MAP ALIGNMENT
-            # initially designed as a separate step
-            # some protein structures in PDB are not formatted correctly
-            # so contact map alignment fails for them
-            # for this cases we replace closest experimental structure with
-            # closest predicted structure if available
-            # if no alignments were found - report
-
-            # remove broken structures
-            if db.name == "highquality_clust30":
-                data_path = pathlib.Path(__file__).parent / "assets"
-                # convert to abspath
-                data_path = data_path.resolve()
-                with open(data_path / "highquality_clust30_error_ids.pkl",
-                          "rb") as f:
-                    error_ids = pickle.load(f)
-                # filter out broken structures
+                aligned_queries = [aln[0].query_name for aln in aligned_cmaps]
                 new_alignments = {
-                    query_name: aln
-                    for query_name, aln in new_alignments.items()
-                    if aln.target_name not in error_ids
+                    aln.query_name: aln
+                    for aln in alignments
+                    if aln.query_name not in aligned_queries
+                    and aln.query_name in query_file.sequences
                 }
 
-            query_ids = [aln.query_name for aln in new_alignments.values()]
-            target_ids = [
-                aln.target_name.rsplit(".", 1)[0]
-                for aln in new_alignments.values()
-            ]
+                # CONTACT MAP ALIGNMENT
+                # initially designed as a separate step
+                # some protein structures in PDB are not formatted correctly
+                # so contact map alignment fails for them
+                # for this cases we replace closest experimental structure with
+                # closest predicted structure if available
+                # if no alignments were found - report
 
-            # extract structural information
-            # in form of C-alpha coordinates
-            if save_structures:
-                save_dir = output_path / "structures" / db.name
-                save_dir.mkdir(parents=True, exist_ok=True)
-            else:
-                save_dir = None
+                # remove broken structures
+                if db.name == "highquality_clust30":
+                    data_path = pathlib.Path(__file__).parent / "assets"
+                    # convert to abspath
+                    data_path = data_path.resolve()
+                    with open(data_path / "highquality_clust30_error_ids.pkl",
+                              "rb") as f:
+                        error_ids = pickle.load(f)
+                    # filter out broken structures
+                    new_alignments = {
+                        query_name: aln
+                        for query_name, aln in new_alignments.items()
+                        if aln.target_name not in error_ids
+                    }
 
-            coords = extract_calpha_coords(db,
-                                           target_ids,
-                                           query_ids,
-                                           save_directory=save_dir,
-                                           threads=threads)
+                query_ids = [aln.query_name for aln in new_alignments.values()]
+                target_ids = [
+                    aln.target_name.rsplit(".", 1)[0]
+                    for aln in new_alignments.values()
+                ]
 
-            for aln, coord in zip(new_alignments.values(), coords):
-                aln.coords = coord
+                # extract structural information
+                # in form of C-alpha coordinates
+                if save_structures:
+                    save_dir = output_path / "structures" / db.name
+                    save_dir.mkdir(parents=True, exist_ok=True)
+                else:
+                    save_dir = None
 
-        # troubleshoot cases where alignments are empty
-        except IndexError:
-            logger.info("No alignments found for %s.", db.name)
-            new_alignments = {}
-            continue
+                coords = extract_calpha_coords(db,
+                                               target_ids,
+                                               query_ids,
+                                               save_directory=save_dir,
+                                               threads=threads)
 
-        # if new alignments are empty - result is empty as well
-        partial_map_align = partial(build_align_contact_map,
-                                    threshold=angstrom_contact_threshold,
-                                    generated_contacts=generate_contacts)
+                for aln, coord in zip(new_alignments.values(), coords):
+                    aln.coords = coord
 
-        with Pool(threads) as p:
-            cmaps = list(p.map(partial_map_align, new_alignments.values()))
+            # troubleshoot cases where alignments are empty
+            except IndexError:
+                logger.info("No alignments found for %s.", db.name)
+                new_alignments = {}
+                continue
 
-        # filter errored contact maps
-        # returned as Tuple[AlignmentResult, None] from `retrieve_align_contact_map`
-        partial_cmaps = [cmap for cmap in cmaps if cmap[1] is not None]
-        aligned_cmaps.extend(partial_cmaps)
-        aligned_database = round(
-            len(partial_cmaps) / len(query_file.sequences) * 100, 2)
-        aligned_total = round(
-            len(aligned_cmaps) / len(query_file.sequences) * 100, 2)
-        logger.info(
-            f"Aligned {len(partial_cmaps)}/{len(query_file.sequences)} ({aligned_database}%) "
-            f"proteins against {db.name} [without length ivalid].")
-        logger.info(
-            f"Aligned {len(aligned_cmaps)}/{len(query_file.sequences)} ({aligned_total}%) "
-            "proteins in total [without length invalid].")
+            # if new alignments are empty - result is empty as well
+            partial_map_align = partial(build_align_contact_map,
+                                        threshold=angstrom_contact_threshold,
+                                        generated_contacts=generate_contacts)
+
+            with Pool(threads) as p:
+                cmaps = list(p.map(partial_map_align, new_alignments.values()))
+
+            # filter errored contact maps
+            # returned as Tuple[AlignmentResult, None] from `retrieve_align_contact_map`
+            partial_cmaps = [cmap for cmap in cmaps if cmap[1] is not None]
+            aligned_cmaps.extend(partial_cmaps)
+            aligned_database = round(
+                len(partial_cmaps) / len(query_file.sequences) * 100, 2)
+            aligned_total = round(
+                len(aligned_cmaps) / len(query_file.sequences) * 100, 2)
+            logger.info(
+                f"Aligned {len(partial_cmaps)}/{len(query_file.sequences)} ({aligned_database}%) "
+                f"proteins against {db.name} [without length ivalid].")
+            logger.info(
+                f"Aligned {len(aligned_cmaps)}/{len(query_file.sequences)} ({aligned_total}%) "
+                "proteins in total [without length invalid].")
 
     if save_cmaps:
         cmap_dir = output_path / "contact_maps"
@@ -544,11 +741,6 @@ def predict_protein_function(
     unaligned_queries = dict(
         sorted(unaligned_queries.items(), key=lambda x: len(x[1])))
 
-    # output_file_name = output_path / "results.tsv"
-    # output_buffer = open(output_file_name, "w", encoding="utf-8")
-    # csv_writer = csv.writer(output_buffer, delimiter="\t")
-    # csv_writer.writerow(OUTPUT_HEADER)
-
     matrices = {}
     json_configs = {}
     for i, mode in enumerate(deepfri_processing_modes):
@@ -561,7 +753,6 @@ def predict_protein_function(
         # create output file for each mode (or in-memory buffer if skipping)
         if skip_matrix:
             # Use in-memory buffer instead of file
-            import io
             output_buffer = io.StringIO()
             matrices[mode] = output_buffer  # Store buffer for later reading
         else:
@@ -642,64 +833,31 @@ def predict_protein_function(
             if command_str is not None:
                 fout.write(f"## {command_str}\n")
         fout.write("\t".join(FINAL_OUTPUT_HEADER) + "\n")
+
         for mode, matrix_source in matrices.items():
             json_path = json_configs[mode]
             GONAMES = get_json_values(json_path, "gonames")
 
-            # Handle both file paths and StringIO buffers
-            import io
+            # Get matrix content (from file or StringIO buffer)
             if isinstance(matrix_source, io.StringIO):
-                # Read from in-memory buffer
                 matrix_source.seek(0)  # Reset to beginning
-                matrix_content = matrix_source.getvalue()
-                matrix_lines = matrix_content.strip().split('\n')
+                matrix_lines = matrix_source.getvalue().strip().split('\n')
                 tsv_reader = csv.reader(matrix_lines, delimiter="\t")
             else:
                 # Read from file
                 with open(matrix_source, "r",
                           encoding="utf-8") as matrix_input:
-                    tsv_reader = csv.reader(matrix_input, delimiter="\t")
-                    # get term names from header
-                    header = next(tsv_reader)
-                    terms = header[
-                        2:]  # skip first two columns (Protein and Type)
-                    term_to_name = {
-                        term: name
-                        for term, name in zip(terms, GONAMES)
-                    }
-                    # get ids with scores > 0.1
-                    for row in tsv_reader:
-                        query_id = row[0]
-                        net_type = row[1]
-                        scores = row[2:]
-                        term_score = {
-                            terms[i]: float(scores[i])
-                            for i in range(len(terms))
-                            if float(scores[i]) >= 0.1
-                        }
-                        sorted_term_score = dict(
-                            sorted(term_score.items(),
-                                   key=lambda item: item[1],
-                                   reverse=True))
-                        # print results and add go names
-                        for term, score in sorted_term_score.items():
-                            go_name = term_to_name.get(term, "Unknown")
-                            aln_info = alignment_data.get(
-                                query_id, [np.nan] * 6)
-                            aligned, target_id, database, target_identity, query_cov, target_cov = aln_info
-                            ic, cogs, supercogs = go2cog_mapping.get(
-                                term, (np.nan, np.nan, np.nan))
-                            fout.write(
-                                f"{query_id}\t{net_type}\t{DEEPFRI_MODES[mode]}\t{term}\t{score:.4f}\t{go_name}"
-                                f"\t{aligned}\t{target_id}\t{database}\t{target_identity}\t{query_cov}\t{target_cov}\t{ic}\t{cogs}\t{supercogs}\n"
-                            )
-                continue  # Skip to next mode after processing file
+                    matrix_lines = matrix_input.readlines()
+                tsv_reader = csv.reader(
+                    [line.rstrip('\n') for line in matrix_lines],
+                    delimiter="\t")
 
-            # Process in-memory buffer (same logic as file)
+            # Process matrix entries
             header = next(tsv_reader)
             terms = header[2:]  # skip first two columns (Protein and Type)
             term_to_name = {term: name for term, name in zip(terms, GONAMES)}
-            # get ids with scores > 0.1
+
+            # Write predictions for all proteins with scores >= 0.1
             for row in tsv_reader:
                 query_id = row[0]
                 net_type = row[1]
@@ -712,7 +870,8 @@ def predict_protein_function(
                     sorted(term_score.items(),
                            key=lambda item: item[1],
                            reverse=True))
-                # print results and add go names
+
+                # Write results and add GO names
                 for term, score in sorted_term_score.items():
                     go_name = term_to_name.get(term, "Unknown")
                     aln_info = alignment_data.get(query_id, [np.nan] * 6)
