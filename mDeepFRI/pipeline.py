@@ -741,66 +741,123 @@ def predict_protein_function(
     unaligned_queries = dict(
         sorted(unaligned_queries.items(), key=lambda x: len(x[1])))
 
-    matrices = {}
-    json_configs = {}
+    # Per-mode list of {config_path, matrix_source (Path|StringIO), net_label}
+    # v1.1 GCN weights use an expanded GO/EC vocabulary while CNN still uses the
+    # older MERGED head sizes; a single TSV cannot mix both. When term lists
+    # differ, write separate matrices per network (see assembly loop below).
+    matrix_jobs_by_mode: Dict[str, List[Dict[str, Any]]] = {}
     for i, mode in enumerate(deepfri_processing_modes):
-        # load model go terms
-        model_path = deepfri_models_config["gcn"][mode]
-        config_path = model_path.rsplit(".", 1)[0] + "_model_params.json"
-        json_configs[mode] = config_path
-        GOTERMS = get_json_values(config_path, "goterms")
+        gcn_model_path = deepfri_models_config["gcn"][mode]
+        cnn_model_path = deepfri_models_config["cnn"][mode]
+        gcn_config_path = gcn_model_path.rsplit(".",
+                                                1)[0] + "_model_params.json"
+        cnn_config_path = cnn_model_path.rsplit(".",
+                                                1)[0] + "_model_params.json"
+        goterms_gcn = get_json_values(gcn_config_path, "goterms")
+        goterms_cnn = get_json_values(cnn_config_path, "goterms")
+        split_matrices = (len(goterms_gcn) != len(goterms_cnn)
+                          or goterms_gcn != goterms_cnn)
 
-        # create output file for each mode (or in-memory buffer if skipping)
-        if skip_matrix:
-            # Use in-memory buffer instead of file
-            output_buffer = io.StringIO()
-            matrices[mode] = output_buffer  # Store buffer for later reading
-        else:
-            output_matrix = output_path / f"prediction_matrix_{mode}.tsv"
-            matrices[mode] = output_matrix
-            output_buffer = open(output_matrix, "w", encoding="utf-8")
+        if split_matrices:
+            logger.info(
+                "GCN and CNN use different output vocabularies for mode %s "
+                "(%d vs %d labels). Writing separate prediction_matrix_%s_*.tsv "
+                "files.", mode, len(goterms_gcn), len(goterms_cnn), mode)
 
-        tsv_writer = csv.writer(output_buffer, delimiter="\t")
-        tsv_writer.writerow(["protein", "network_type"] + GOTERMS)
+        gcn_prots = len(aligned_cmaps)
+        cnn_prots = len(unaligned_queries)
+        matrix_jobs_by_mode[mode] = []
+
+        def _open_matrix_sink(filename_suffix: str):
+            if skip_matrix:
+                buf = io.StringIO()
+                return buf, buf
+            out_path = output_path / filename_suffix
+            fh = open(out_path, "w", encoding="utf-8")
+            return fh, out_path
 
         logger.info("Processing mode: %s; %i/%i", DEEPFRI_MODES[mode], i + 1,
                     len(deepfri_processing_modes))
 
-        # GCN prediction
-        gcn_prots = len(aligned_cmaps)
-        if gcn_prots > 0:
-            net_type = "gcn"
+        if split_matrices:
+            if gcn_prots > 0:
+                fh, src = _open_matrix_sink(
+                    f"prediction_matrix_{mode}_gcn.tsv")
+                tsv_writer = csv.writer(fh, delimiter="\t")
+                tsv_writer.writerow(["protein", "network_type"] + goterms_gcn)
+                gcn_path = deepfri_models_config["gcn"][mode]
+                gcn = Predictor(gcn_path, threads=threads)
+                _run_prediction_loop(
+                    predictor=gcn,
+                    data_iterable=aligned_cmaps,
+                    data_len=len(aligned_cmaps),
+                    net_type="gcn",
+                    tsv_writer=tsv_writer,
+                    description=f"Predicting with GCN ({DEEPFRI_MODES[mode]})")
+                del gcn
+                if not skip_matrix:
+                    fh.close()
+                matrix_jobs_by_mode[mode].append({
+                    "config_path": gcn_config_path,
+                    "matrix_source": src,
+                })
 
-            # GCN for queries with aligned contact map
-            gcn_path = deepfri_models_config[net_type][mode]
-            gcn = Predictor(gcn_path, threads=threads)
-            _run_prediction_loop(
-                predictor=gcn,
-                data_iterable=aligned_cmaps,
-                data_len=len(aligned_cmaps),
-                net_type=net_type,
-                tsv_writer=tsv_writer,
-                description=f"Predicting with GCN ({DEEPFRI_MODES[mode]})")
-            del gcn  # Explicitly free memory
+            if cnn_prots > 0:
+                fh, src = _open_matrix_sink(
+                    f"prediction_matrix_{mode}_cnn.tsv")
+                tsv_writer = csv.writer(fh, delimiter="\t")
+                tsv_writer.writerow(["protein", "network_type"] + goterms_cnn)
+                cnn_path = deepfri_models_config["cnn"][mode]
+                cnn = Predictor(cnn_path, threads=threads)
+                _run_prediction_loop(
+                    predictor=cnn,
+                    data_iterable=unaligned_queries.items(),
+                    data_len=len(unaligned_queries),
+                    net_type="cnn",
+                    tsv_writer=tsv_writer,
+                    description=f"Predicting with CNN ({DEEPFRI_MODES[mode]})")
+                del cnn
+                if not skip_matrix:
+                    fh.close()
+                matrix_jobs_by_mode[mode].append({
+                    "config_path": cnn_config_path,
+                    "matrix_source": src,
+                })
+        else:
+            fh, src = _open_matrix_sink(f"prediction_matrix_{mode}.tsv")
+            tsv_writer = csv.writer(fh, delimiter="\t")
+            tsv_writer.writerow(["protein", "network_type"] + goterms_gcn)
 
-        # CNN for queries without satisfying alignments
-        cnn_prots = len(unaligned_queries)
-        if cnn_prots > 0:
-            net_type = "cnn"
-            cnn_path = deepfri_models_config[net_type][mode]
-            cnn = Predictor(cnn_path, threads=threads)
-            _run_prediction_loop(
-                predictor=cnn,
-                data_iterable=unaligned_queries.items(),
-                data_len=len(unaligned_queries),
-                net_type=net_type,
-                tsv_writer=tsv_writer,
-                description=f"Predicting with CNN ({DEEPFRI_MODES[mode]})")
-            del cnn  # Explicitly free memory
+            if gcn_prots > 0:
+                gcn_path = deepfri_models_config["gcn"][mode]
+                gcn = Predictor(gcn_path, threads=threads)
+                _run_prediction_loop(
+                    predictor=gcn,
+                    data_iterable=aligned_cmaps,
+                    data_len=len(aligned_cmaps),
+                    net_type="gcn",
+                    tsv_writer=tsv_writer,
+                    description=f"Predicting with GCN ({DEEPFRI_MODES[mode]})")
+                del gcn
 
-        # Close file buffer if writing to file (keep StringIO for reading later)
-        if not skip_matrix:
-            output_buffer.close()
+            if cnn_prots > 0:
+                cnn_path = deepfri_models_config["cnn"][mode]
+                cnn = Predictor(cnn_path, threads=threads)
+                _run_prediction_loop(
+                    predictor=cnn,
+                    data_iterable=unaligned_queries.items(),
+                    data_len=len(unaligned_queries),
+                    net_type="cnn",
+                    tsv_writer=tsv_writer,
+                    description=f"Predicting with CNN ({DEEPFRI_MODES[mode]})")
+                del cnn
+
+            if not skip_matrix:
+                fh.close()
+            matrix_jobs_by_mode[mode].append({
+                "config_path": gcn_config_path,
+                "matrix_source": src,
+            })
 
     ### FORMAT AND CREATE FINAL OUTPUT FILES ###
     # combine mode-specific matrices into a single file
@@ -833,55 +890,91 @@ def predict_protein_function(
             if command_str is not None:
                 fout.write(f"## {command_str}\n")
         fout.write("\t".join(FINAL_OUTPUT_HEADER) + "\n")
+        for mode, jobs in matrix_jobs_by_mode.items():
+            for job in jobs:
+                json_path = job["config_path"]
+                matrix_source = job["matrix_source"]
+                GONAMES = get_json_values(json_path, "gonames")
 
-        for mode, matrix_source in matrices.items():
-            json_path = json_configs[mode]
-            GONAMES = get_json_values(json_path, "gonames")
+                if isinstance(matrix_source, io.StringIO):
+                    matrix_source.seek(0)
+                    matrix_content = matrix_source.getvalue()
+                    matrix_lines = matrix_content.strip().split("\n")
+                    tsv_reader = csv.reader(matrix_lines, delimiter="\t")
+                else:
+                    with open(matrix_source, "r",
+                              encoding="utf-8") as matrix_input:
+                        tsv_reader = csv.reader(matrix_input, delimiter="\t")
+                        header = next(tsv_reader)
+                        terms = header[2:]
+                        term_to_name = {
+                            term: name
+                            for term, name in zip(terms, GONAMES)
+                        }
+                        for row in tsv_reader:
+                            query_id = row[0]
+                            net_type = row[1]
+                            scores = row[2:]
+                            if len(scores) != len(terms):
+                                raise ValueError(
+                                    f"Row length mismatch for mode {mode}: "
+                                    f"{len(scores)} scores vs {len(terms)} terms "
+                                    f"(config {json_path}).")
+                            term_score = {
+                                terms[i]: float(scores[i])
+                                for i in range(len(terms))
+                                if float(scores[i]) >= 0.1
+                            }
+                            sorted_term_score = dict(
+                                sorted(term_score.items(),
+                                       key=lambda item: item[1],
+                                       reverse=True))
+                            for term, score in sorted_term_score.items():
+                                go_name = term_to_name.get(term, "Unknown")
+                                aln_info = alignment_data.get(
+                                    query_id, [np.nan] * 6)
+                                aligned, target_id, database, target_identity, query_cov, target_cov = aln_info
+                                ic, cogs, supercogs = go2cog_mapping.get(
+                                    term, (np.nan, np.nan, np.nan))
+                                fout.write(
+                                    f"{query_id}\t{net_type}\t{DEEPFRI_MODES[mode]}\t{term}\t{score:.4f}\t{go_name}"
+                                    f"\t{aligned}\t{target_id}\t{database}\t{target_identity}\t{query_cov}\t{target_cov}\t{ic}\t{cogs}\t{supercogs}\n"
+                                )
+                    continue
 
-            # Get matrix content (from file or StringIO buffer)
-            if isinstance(matrix_source, io.StringIO):
-                matrix_source.seek(0)  # Reset to beginning
-                matrix_lines = matrix_source.getvalue().strip().split('\n')
-                tsv_reader = csv.reader(matrix_lines, delimiter="\t")
-            else:
-                # Read from file
-                with open(matrix_source, "r",
-                          encoding="utf-8") as matrix_input:
-                    matrix_lines = matrix_input.readlines()
-                tsv_reader = csv.reader(
-                    [line.rstrip('\n') for line in matrix_lines],
-                    delimiter="\t")
-
-            # Process matrix entries
-            header = next(tsv_reader)
-            terms = header[2:]  # skip first two columns (Protein and Type)
-            term_to_name = {term: name for term, name in zip(terms, GONAMES)}
-
-            # Write predictions for all proteins with scores >= 0.1
-            for row in tsv_reader:
-                query_id = row[0]
-                net_type = row[1]
-                scores = row[2:]
-                term_score = {
-                    terms[i]: float(scores[i])
-                    for i in range(len(terms)) if float(scores[i]) >= 0.1
+                header = next(tsv_reader)
+                terms = header[2:]
+                term_to_name = {
+                    term: name
+                    for term, name in zip(terms, GONAMES)
                 }
-                sorted_term_score = dict(
-                    sorted(term_score.items(),
-                           key=lambda item: item[1],
-                           reverse=True))
-
-                # Write results and add GO names
-                for term, score in sorted_term_score.items():
-                    go_name = term_to_name.get(term, "Unknown")
-                    aln_info = alignment_data.get(query_id, [np.nan] * 6)
-                    aligned, target_id, database, target_identity, query_cov, target_cov = aln_info
-                    ic, cogs, supercogs = go2cog_mapping.get(
-                        term, (np.nan, np.nan, np.nan))
-                    fout.write(
-                        f"{query_id}\t{net_type}\t{DEEPFRI_MODES[mode]}\t{term}\t{score:.4f}\t{go_name}"
-                        f"\t{aligned}\t{target_id}\t{database}\t{target_identity}\t{query_cov}\t{target_cov}\t{ic}\t{cogs}\t{supercogs}\n"
-                    )
+                for row in tsv_reader:
+                    query_id = row[0]
+                    net_type = row[1]
+                    scores = row[2:]
+                    if len(scores) != len(terms):
+                        raise ValueError(
+                            f"Row length mismatch for mode {mode}: "
+                            f"{len(scores)} scores vs {len(terms)} terms "
+                            f"(config {json_path}).")
+                    term_score = {
+                        terms[i]: float(scores[i])
+                        for i in range(len(terms)) if float(scores[i]) >= 0.1
+                    }
+                    sorted_term_score = dict(
+                        sorted(term_score.items(),
+                               key=lambda item: item[1],
+                               reverse=True))
+                    for term, score in sorted_term_score.items():
+                        go_name = term_to_name.get(term, "Unknown")
+                        aln_info = alignment_data.get(query_id, [np.nan] * 6)
+                        aligned, target_id, database, target_identity, query_cov, target_cov = aln_info
+                        ic, cogs, supercogs = go2cog_mapping.get(
+                            term, (np.nan, np.nan, np.nan))
+                        fout.write(
+                            f"{query_id}\t{net_type}\t{DEEPFRI_MODES[mode]}\t{term}\t{score:.4f}\t{go_name}"
+                            f"\t{aligned}\t{target_id}\t{database}\t{target_identity}\t{query_cov}\t{target_cov}\t{ic}\t{cogs}\t{supercogs}\n"
+                        )
 
     if remove_intermediate:
         for db in databases:
