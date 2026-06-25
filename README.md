@@ -354,4 +354,4 @@ in the [Keep a Changelog](http://keepachangelog.com/en/1.0.0/) format.
 
 ## ⚖️ License
 
-This library is provided under the [The 3-Clause BSD License](https://opensource.org/license/bsd-3-clause/).
+This library is provided under the GPL-3.0 license.
