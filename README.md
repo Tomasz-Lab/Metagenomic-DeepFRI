@@ -157,10 +157,7 @@ foldcomp compress [-t number] <dir|tar(.gz)> [<dir|tar|db>]
 Two versions of models available:
 
 - `v1.0` - is the original version from DeepFRI publication.
-- `v1.1` - is a version finetuned on AlphaFold models
-and machine-generated Gene Ontology Uniprot annotations.
-You can read details about `v1.1` in
-[ISMB 2023 presentation by Pawel Szczerbiak](https://docs.google.com/presentation/d/1Pzn_gQH5-dDImpApSoWFQNu3WByFZYWqfesplANK9hI/edit?usp=sharing)
+- `v1.1` - is a version finetuned on AlphaFold models and machine-generated Gene Ontology Uniprot annotations ([details](https://www.nature.com/articles/s41467-025-63250-3)).
 
 To download models run command:
 
@@ -376,4 +373,4 @@ in the [Keep a Changelog](http://keepachangelog.com/en/1.0.0/) format.
 
 ## ⚖️ License
 
-This library is provided under the [The 3-Clause BSD License](https://opensource.org/license/bsd-3-clause/).
+This library is provided under the GPL-3.0 license.

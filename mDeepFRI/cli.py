@@ -422,6 +422,24 @@ def search_databases(ctx, input, output, db_path, mmseqs_sensitivity,
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     help="TSV file mapping query IDs to structure paths. Bypasses database search.",
 )
+
+@click.option(
+    "--propagate-go-terms",
+    default=False,
+    type=bool,
+    is_flag=True,
+    help="Propagate GO terms up the ontology DAG using the true-path rule "
+    "(is_a and part_of relations). Downloads go-basic.obo automatically.",
+)
+
+@click.option(
+    "--obo-path",
+    default=None,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Path to a GO OBO file (go-basic.obo). "
+    "If not provided and --propagate-go-terms is set, "
+    "the file will be downloaded automatically to the output directory.",
+)
 @click.pass_context
 def predict_function(ctx, input, db_path, weights, output, processing_modes,
                      angstrom_contact_thresh, generate_contacts,
@@ -431,7 +449,7 @@ def predict_function(ctx, input, db_path, weights, output, processing_modes,
                      alignment_gap_extend, remove_intermediate, overwrite,
                      threads, skip_pdb, min_length, max_length, tmpdir,
                      save_structures, save_cmaps, skip_matrix, scoring_matrix,
-                     custom_mapping):
+                     custom_mapping, propagate_go_terms, obo_path):
     """Predict protein function from sequence."""
 
     logger.info("Starting Metagenomic-DeepFRI.")
@@ -498,7 +516,9 @@ def predict_function(ctx, input, db_path, weights, output, processing_modes,
         scoring_matrix=scoring_matrix,
         command_str=command_str,
         version=version_str,
-        custom_mapping_file=str(custom_mapping) if custom_mapping else None)
+        custom_mapping_file=str(custom_mapping) if custom_mapping else None,
+        propagate_go_terms=propagate_go_terms,
+        obo_path=obo_path)
 
 
 @main.command()

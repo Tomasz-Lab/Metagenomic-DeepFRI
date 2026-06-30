@@ -548,7 +548,9 @@ def predict_protein_function(
         scoring_matrix: str = "VTML80",
         command_str: Optional[str] = None,
         version: Optional[str] = None,
-        custom_mapping_file: Optional[str] = None):
+        custom_mapping_file: Optional[str] = None,
+        propagate_go_terms: bool = False,
+        obo_path: Optional[str] = None):
     """
     Predict protein function using DeepFRI.
 
@@ -599,6 +601,13 @@ def predict_protein_function(
             When provided, bypasses hierarchical database search. Proteins with a
             loadable structure mapping are processed with GCN; others use CNN.
             Defaults to None (use databases).
+        propagate_go_terms (bool, optional): Propagate GO terms up the
+            ontology DAG using the true-path rule (is_a and part_of).
+            Downloads go-basic.obo automatically if needed.
+            Defaults to False.
+        obo_path (str, optional): Path to GO OBO file (go-basic.obo).
+            If None and propagate_go_terms is True, the file is downloaded
+            to the output directory automatically.
 
     Returns:
         None: Results are written to files in output_path.
@@ -778,18 +787,22 @@ def predict_protein_function(
     unaligned_queries = dict(
         sorted(unaligned_queries.items(), key=lambda x: len(x[1])))
 
+    # output_file_name = output_path / "results.tsv"
+    # output_buffer = open(output_file_name, "w", encoding="utf-8")
+    # csv_writer = csv.writer(output_buffer, delimiter="\t")
+    # csv_writer.writerow(OUTPUT_HEADER)
+
     # Per-mode list of {config_path, matrix_source (Path|StringIO), net_label}
     # v1.1 GCN weights use an expanded GO/EC vocabulary while CNN still uses the
     # older MERGED head sizes; a single TSV cannot mix both. When term lists
     # differ, write separate matrices per network (see assembly loop below).
+
     matrix_jobs_by_mode: Dict[str, List[Dict[str, Any]]] = {}
     for i, mode in enumerate(deepfri_processing_modes):
         gcn_model_path = deepfri_models_config["gcn"][mode]
         cnn_model_path = deepfri_models_config["cnn"][mode]
-        gcn_config_path = gcn_model_path.rsplit(".",
-                                                1)[0] + "_model_params.json"
-        cnn_config_path = cnn_model_path.rsplit(".",
-                                                1)[0] + "_model_params.json"
+        gcn_config_path = gcn_model_path.rsplit(".", 1)[0] + "_model_params.json"
+        cnn_config_path = cnn_model_path.rsplit(".", 1)[0] + "_model_params.json"
         goterms_gcn = get_json_values(gcn_config_path, "goterms")
         goterms_cnn = get_json_values(cnn_config_path, "goterms")
         split_matrices = (len(goterms_gcn) != len(goterms_cnn)
@@ -1012,6 +1025,24 @@ def predict_protein_function(
                             f"{query_id}\t{net_type}\t{DEEPFRI_MODES[mode]}\t{term}\t{score:.4f}\t{go_name}"
                             f"\t{aligned}\t{target_id}\t{database}\t{target_identity}\t{query_cov}\t{target_cov}\t{_format_ic(ic)}\t{cogs}\t{supercogs}\n"
                         )
+
+    # GO-term propagation (true-path rule)
+    if propagate_go_terms:
+        from mDeepFRI.go_propagation import download_obo, propagate_results
+
+        if obo_path is None:
+            obo_file = output_path / "go-basic.obo"
+        else:
+            obo_file = pathlib.Path(obo_path)
+
+        download_obo(obo_file)
+
+        propagated_output = output_path / "results_propagated.tsv"
+        propagate_results(
+            results_path=final_output,
+            output_path=propagated_output,
+            obo_path=obo_file,
+        )
 
     if remove_intermediate:
         for db in databases:

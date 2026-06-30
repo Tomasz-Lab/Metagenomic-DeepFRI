@@ -32,6 +32,8 @@ dependencies = [
     "foldcomp",
     "tqdm",
     "onnxruntime ~=1.26.0"
+    "obonet >=0.3",
+    "networkx >=2.6",
 ]
 
 [project.urls]
