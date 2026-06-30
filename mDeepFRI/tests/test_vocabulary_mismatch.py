@@ -25,9 +25,7 @@ class TestVocabularyMismatch(unittest.TestCase):
         self.query_file_path = self.data_dir / "small_query.faa"
 
         if not self.query_file_path.exists():
-            self.query_file_path = Path(
-                "/nfs/cds-peta/exports/biol_micro_cds_gr_sunagawa/scratch/vbezshapkin/Metagenomic-DeepFRI/mDeepFRI/tests/data/small_query.faa"
-            )
+            self.skipTest(f"Test data file not found: {self.query_file_path}")
 
     @patch("mDeepFRI.pipeline.load_go_to_cog")
     @patch("mDeepFRI.pipeline.get_json_values")

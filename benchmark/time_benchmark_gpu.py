@@ -47,7 +47,7 @@ def generate_fasta(count, filename):
     command = [
         'conda', 'run', '-n', 'data-analysis', 'seqkit', 'sample', '-n',
         str(count), '-s', '42', '-o', filename, '-2',
-        '/nfs/nas22/fs2202/biol_micro_sunagawa/Projects/EAN/PROPHAGE_REFSEQ_EAN/scratch/databases/afdb_swissprot_v4.fasta.gz'
+        '../data/databases/afdb_swissprot_v4.fasta.gz'
     ]
 
     subprocess.run(command,
@@ -185,11 +185,11 @@ def run_benchmark():
             cmd = [
                 'conda', 'run', '-n', 'deepfri', 'mDeepFRI',
                 'predict-function', '-i', abs_fasta, '-d',
-                '/nfs/nas22/fs2202/biol_micro_sunagawa/Projects/EAN/PROPHAGE_REFSEQ_EAN/scratch/databases/afdb_swissprot_v4',
+                '../data/databases/afdb_swissprot_v4',
                 '-d',
-                '/nfs/nas22/fs2202/biol_micro_sunagawa/Projects/EAN/PROPHAGE_REFSEQ_EAN/scratch/databases/highquality_clust30',
+                '../data/databases/highquality_clust30',
                 '-w',
-                '/nfs/cds-peta/exports/biol_micro_cds_gr_sunagawa/scratch/vbezshapkin/Metagenomic-DeepFRI/../mDeepFRI_test/onnx_deepfri_models/',
+                '../onnx_deepfri_models/',
                 '-o', deepfri_out, '-t', '8'
             ]
 
