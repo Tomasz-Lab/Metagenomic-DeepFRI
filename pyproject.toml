@@ -31,8 +31,7 @@ dependencies = [
     "pyopal ~=0.7",
     "foldcomp",
     "tqdm",
-    "onnxruntime-gpu; platform_system != 'Darwin' and platform_machine != 'aarch64' and platform_machine != 'arm64'",
-    "onnxruntime; platform_system == 'Darwin' or platform_machine == 'aarch64' or platform_machine == 'arm64'"
+    "onnxruntime ~=1.26.0"
 ]
 
 [project.urls]
@@ -45,6 +44,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pre-commit"
+]
+gpu = [
+    "onnxruntime-gpu[cuda,cudnn]~=1.26.0; platform_system != 'Darwin' and platform_machine != 'aarch64' and platform_machine != 'arm64'",
 ]
 
 [project.scripts]
