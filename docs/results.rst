@@ -96,7 +96,8 @@ Column Descriptions
 - **target_coverage** - Proportion of target sequence covered by the alignment
   (0.0-1.0 scale).
 
-- **ic** - Information Content (IC) of the predicted GO term.
+- **ic** - Information Content (IC) of the predicted GO term (two decimal
+  places). Empty if the GO term has no IC in the mapping.
 
 - **cogs** - Cluster of Orthologous Groups (COG) category mapped to the
   predicted GO term.

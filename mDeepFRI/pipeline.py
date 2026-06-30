@@ -64,6 +64,26 @@ FINAL_OUTPUT_HEADER = [
 ]
 
 NAN_ALIGNMENT_INFO = [np.nan] * 6
+MISSING_TSV = ""
+
+
+def _parse_ic(raw) -> Optional[float]:
+    """Parse information content from a mapping field."""
+    if raw is None:
+        return None
+    if isinstance(raw, float) and np.isnan(raw):
+        return None
+    text = str(raw).strip()
+    if not text or text.lower() == "nan":
+        return None
+    return float(text)
+
+
+def _format_ic(ic: Optional[float]) -> str:
+    """Format IC for TSV output (two decimals, empty if missing)."""
+    if ic is None:
+        return MISSING_TSV
+    return f"{ic:.2f}"
 
 
 def load_go_to_cog(path: pathlib.Path):
@@ -74,7 +94,7 @@ def load_go_to_cog(path: pathlib.Path):
         for row in reader:
             go_term = row[0]
             cogs = row[1].replace("{", "").replace("}", "").replace("'", "")
-            ic = row[4]
+            ic = _parse_ic(row[4] if len(row) > 4 else None)
             supercogs = row[5].replace("{", "").replace("}",
                                                         "").replace("'", "")
             mapping[go_term] = (ic, cogs, supercogs)
@@ -502,9 +522,9 @@ def _run_prediction_loop(predictor, data_iterable: iter, data_len: int,
 
 def predict_protein_function(
         query_file: QueryFile,
-        databases: Tuple[Database] = (),
-        weights: str = "",
-        output_path: str = "",
+        databases: Tuple[Database],
+        weights: str,
+        output_path: str,
         deepfri_processing_modes: List[str] = ["ec", "bp", "mf", "cc"],
         angstrom_contact_threshold: float = 6,
         generate_contacts: int = 2,
@@ -935,10 +955,10 @@ def predict_protein_function(
                                     query_id, [np.nan] * 6)
                                 aligned, target_id, database, target_identity, query_cov, target_cov = aln_info
                                 ic, cogs, supercogs = go2cog_mapping.get(
-                                    term, (np.nan, np.nan, np.nan))
+                                    term, (None, MISSING_TSV, MISSING_TSV))
                                 fout.write(
                                     f"{query_id}\t{net_type}\t{DEEPFRI_MODES[mode]}\t{term}\t{score:.4f}\t{go_name}"
-                                    f"\t{aligned}\t{target_id}\t{database}\t{target_identity}\t{query_cov}\t{target_cov}\t{ic}\t{cogs}\t{supercogs}\n"
+                                    f"\t{aligned}\t{target_id}\t{database}\t{target_identity}\t{query_cov}\t{target_cov}\t{_format_ic(ic)}\t{cogs}\t{supercogs}\n"
                                 )
                     continue
 
@@ -970,10 +990,10 @@ def predict_protein_function(
                         aln_info = alignment_data.get(query_id, [np.nan] * 6)
                         aligned, target_id, database, target_identity, query_cov, target_cov = aln_info
                         ic, cogs, supercogs = go2cog_mapping.get(
-                            term, (np.nan, np.nan, np.nan))
+                            term, (None, MISSING_TSV, MISSING_TSV))
                         fout.write(
                             f"{query_id}\t{net_type}\t{DEEPFRI_MODES[mode]}\t{term}\t{score:.4f}\t{go_name}"
-                            f"\t{aligned}\t{target_id}\t{database}\t{target_identity}\t{query_cov}\t{target_cov}\t{ic}\t{cogs}\t{supercogs}\n"
+                            f"\t{aligned}\t{target_id}\t{database}\t{target_identity}\t{query_cov}\t{target_cov}\t{_format_ic(ic)}\t{cogs}\t{supercogs}\n"
                         )
 
     if remove_intermediate:
