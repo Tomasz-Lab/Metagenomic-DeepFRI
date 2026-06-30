@@ -305,6 +305,14 @@ def hierarchical_database_search(query_file: QueryFile,
     return dbs
 
 
+def _log_cnn_fallback(query_id: str, reason: str) -> None:
+    logger.warning(
+        "%s: %s. Falling back to CNN (sequence-only) prediction.",
+        query_id,
+        reason,
+    )
+
+
 def load_custom_alignments_from_mapping(
         mapping_file: str,
         query_file: QueryFile,
@@ -355,10 +363,10 @@ def load_custom_alignments_from_mapping(
         ... )
 
     Notes:
-        - All proteins with mappings are treated as "aligned" and processed with GCN
-        - Unmapped proteins will be skipped with a warning
-        - Structure files must be accessible and loadable
-        - Both CIF and PDB formats are supported
+        - Proteins with a successful mapping are processed with GCN
+        - Proteins missing from the mapping file or with unloadable structures
+          are logged and predicted with CNN (sequence-only)
+        - Structure files must be in CIF (mmcif) or PDB format
     """
 
     # Load the mapping file
@@ -388,17 +396,16 @@ def load_custom_alignments_from_mapping(
 
     for query_id, query_sequence in query_file.sequences.items():
         if query_id not in mapping:
-            logger.warning(
-                f"Protein {query_id} not found in mapping; skipping.")
+            _log_cnn_fallback(query_id,
+                              "not found in custom mapping file")
             continue
 
         structure_path = mapping[query_id]
         struct_path_obj = pathlib.Path(structure_path)
 
         if not struct_path_obj.exists():
-            logger.warning(
-                f"Structure file not found: {structure_path}; skipping {query_id}."
-            )
+            _log_cnn_fallback(
+                query_id, f"structure file not found: {structure_path}")
             continue
 
         try:
@@ -407,10 +414,9 @@ def load_custom_alignments_from_mapping(
                 structure_string = f.read()
 
             # Determine file type from extension
-            if structure_path.endswith('.cif') or structure_path.endswith(
-                    '.mmcif'):
+            if struct_path_obj.suffix.lower() in {".cif", ".mmcif"}:
                 filetype = "mmcif"
-            elif structure_path.endswith('.pdb'):
+            elif struct_path_obj.suffix.lower() == ".pdb":
                 filetype = "pdb"
             else:
                 logger.warning(
@@ -423,9 +429,10 @@ def load_custom_alignments_from_mapping(
                 structure_string, chain="A", filetype=filetype)
 
             if target_sequence is None or coords is None:
-                logger.warning(
-                    f"Failed to extract structure information from {structure_path}; "
-                    f"skipping {query_id}.")
+                _log_cnn_fallback(
+                    query_id,
+                    f"failed to extract structure information from {structure_path}"
+                )
                 continue
 
             # Perform pairwise alignment
@@ -463,11 +470,14 @@ def load_custom_alignments_from_mapping(
                 f"(identity={identity:.3f}, query_cov={query_coverage:.3f})")
 
         except Exception as e:
-            logger.warning(f"Error processing {query_id}: {str(e)}; skipping.")
+            _log_cnn_fallback(query_id, f"error loading structure ({e})")
             continue
 
     logger.info(
-        f"Successfully loaded {len(aligned_cmaps)} alignments from custom mapping."
+        "Loaded %d structure alignment(s) from custom mapping; "
+        "%d protein(s) queued for CNN fallback.",
+        len(aligned_cmaps),
+        len(query_file.sequences) - len(aligned_cmaps),
     )
     return aligned_cmaps
 
@@ -586,8 +596,8 @@ def predict_protein_function(
             Defaults to None.
         custom_mapping_file (str, optional): Path to TSV file with protein-to-structure mappings.
             Format: protein_id<tab>structure_path (skip header).
-            When provided, bypasses hierarchical database search. All proteins with mappings
-            are processed with GCN (structure-based prediction).
+            When provided, bypasses hierarchical database search. Proteins with a
+            loadable structure mapping are processed with GCN; others use CNN.
             Defaults to None (use databases).
 
     Returns:
@@ -737,6 +747,13 @@ def predict_protein_function(
         for query_id, seq in query_file.sequences.items()
         if query_id not in aligned_queries
     }
+
+    if custom_mapping_file and unaligned_queries:
+        logger.info(
+            "Predicting %d protein(s) with CNN (sequence-only): %s",
+            len(unaligned_queries),
+            ", ".join(unaligned_queries.keys()),
+        )
 
     # WRITE ALIGNMENT RESULTS
     alignment_results_file = output_path / "alignment_summary.tsv"

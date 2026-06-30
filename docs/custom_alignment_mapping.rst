@@ -18,10 +18,8 @@ that maps each protein to its corresponding structure file. Metagenomic-DeepFRI 
 1. Loads the provided structures
 2. **Performs real pairwise alignments** using PyOpal (same as database search)
 3. Calculates actual alignment metrics (identity, coverage)
-4. Extracts coordinates and predicts function
-
-All proteins with mappings are processed with **GCN** (structure-aware predictions) since structures
-are provided.
+4. Extracts coordinates and predicts function with **GCN** when the structure is usable
+5. Falls back to **CNN** (sequence-only) when no usable structure is available
 
 Requirements
 ------------
@@ -48,7 +46,6 @@ The mapping file must be a tab-separated text file with two columns:
 - Structure paths can be relative or absolute
 - Relative paths are resolved relative to the mapping file's directory
 - Supported file formats: ``.cif``, ``.mmcif``, ``.pdb``
-- Proteins not in the mapping will be skipped with a warning
 
 Usage
 -----
@@ -56,15 +53,18 @@ Usage
 Command-line Interface
 ~~~~~~~~~~~~~~~~~~~~~~
 
-Use the ``--custom-mapping`` flag to provide your mapping file:
+Use the ``--custom-mapping`` flag with ``predict-function``:
 
 .. code-block:: console
 
-    python -m mDeepFRI.cli \\
+    mDeepFRI predict-function \\
         --input proteins.faa \\
         --output results/ \\
         --weights path/to/model/weights \\
         --custom-mapping protein_structures.tsv
+
+When ``--custom-mapping`` is provided, ``--db-path`` is not required and database
+search is skipped.
 
 Python API
 ~~~~~~~~~~
@@ -87,21 +87,6 @@ Use the ``custom_mapping_file`` parameter in ``predict_protein_function()``:
         output_path="results/",
         custom_mapping_file="protein_structures.tsv"
     )
-
-Or use with CLI (add to your CLI configuration or scripts):
-
-.. code-block:: python
-
-    from mDeepFRI.cli import main
-
-    # Build custom argument list
-    args = [
-        "--input", "proteins.faa",
-        "--output", "results/",
-        "--weights", "path/to/weights",
-        "--custom-mapping", "protein_structures.tsv"
-    ]
-    main(args)
 
 Example
 -------
@@ -141,11 +126,34 @@ Then run:
 
 .. code-block:: console
 
-    python -m mDeepFRI.cli \\
+    mDeepFRI predict-function \\
         --input proteins.faa \\
         --output predictions/ \\
         --weights path/to/weights \\
         --custom-mapping protein_structures.tsv
+
+CNN Fallback
+------------
+
+Custom mapping uses the same GCN/CNN split as the standard database-search pipeline:
+
++-------------------------------+---------------------------+
+| Condition                     | Network used              |
++===============================+===========================+
+| Structure loaded and aligned  | GCN (structure-aware)     |
+| Missing from mapping file     | CNN (sequence-only)       |
+| Structure file not found      | CNN (sequence-only)       |
+| Structure parse/load error    | CNN (sequence-only)       |
++-------------------------------+---------------------------+
+
+When a structure cannot be used, mDeepFRI logs a warning such as:
+
+.. code-block:: text
+
+    WARNING: protein_B: structure file not found: structures/missing.cif. Falling back to CNN (sequence-only) prediction.
+
+Those proteins appear in ``alignment_summary.tsv`` with ``aligned=False`` and are
+annotated in ``results.tsv`` with ``network_type=cnn``.
 
 Output Files
 ~~~~~~~~~~~~
@@ -155,13 +163,13 @@ Metagenomic-DeepFRI generates the standard output files in the ``predictions/`` 
 - **alignment_summary.tsv**: Shows alignment metrics for each protein
 - **results.tsv**: Final functional predictions (GO terms with scores)
 - **prediction_matrix_bp.tsv**, **prediction_matrix_mf.tsv**, etc.: Full prediction matrices per mode
-- **contact_maps/**: (Optional, with ``--save-cmaps``) Aligned contact maps
+- **contact_maps/**: (Optional, with ``--save-cmaps``) Aligned contact maps for GCN proteins only
 
 Alignment Metrics in Results
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Even with custom mappings, Metagenomic-DeepFRI performs **real sequence alignments** between
-query and structure sequences using PyOpal. The output includes:
+query and structure sequences using PyOpal for proteins with loadable structures. The output includes:
 
 - **query_identity**: Sequence identity of the alignment (0.0-1.0)
 - **query_coverage**: Fraction of query covered by alignment (0.0-1.0)
@@ -171,25 +179,11 @@ Example **alignment_summary.tsv**:
 
 .. code-block:: text
 
-    query_id    aligned target_id   db_name query_identity  query_coverage  target_coverage
-    protein_A   True    model_A     custom_mapping  0.85    0.92    0.88
-    protein_B   True    model_B     custom_mapping  0.78    0.95    0.85
+    query_id    aligned target_id   db_name         query_identity  query_coverage  target_coverage
+    protein_A   True    model_A     custom_mapping  0.85            0.92            0.88
+    protein_B   False                               nan             nan             nan
 
-Advanced Usage
---------------
-
-Skipping Proteins
-~~~~~~~~~~~~~~~~~
-
-Proteins in your query FASTA that are **not** in the mapping file will be skipped with a warning:
-
-.. code-block:: text
-
-    WARNING: Protein unmapped_protein not found in mapping; skipping.
-
-If you want to predict unmapped proteins using sequence-only mode, use the standard pipeline
-with databases instead of custom mapping.
-
+``protein_B`` failed structure loading and was predicted with CNN instead.
 
 See Also
 --------

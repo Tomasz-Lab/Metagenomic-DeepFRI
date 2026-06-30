@@ -319,6 +319,96 @@ class TestPipelineRegression(unittest.TestCase):
             self.assertGreater(mock_build_align_contact_map.call_count, 0,
                                "build_align_contact_map should be called")
 
+    @patch("mDeepFRI.pipeline.load_go_to_cog")
+    @patch("mDeepFRI.pipeline.load_deepfri_config")
+    @patch("mDeepFRI.pipeline.Predictor")
+    @patch("mDeepFRI.pipeline.extract_residues_coordinates")
+    @patch("mDeepFRI.pipeline.build_align_contact_map")
+    @patch("mDeepFRI.pipeline.get_json_values")
+    def test_custom_mapping_cnn_fallback_on_structure_failure(
+        self,
+        mock_get_json_values,
+        mock_build_align_contact_map,
+        mock_extract_residues_coordinates,
+        mock_predictor_cls,
+        mock_load_config,
+        mock_load_go_to_cog,
+    ):
+        """Failed structure loads should fall back to CNN prediction."""
+
+        mock_load_config.return_value = {
+            "gcn": {"bp": "path/to/gcn_bp.onnx"},
+            "cnn": {"bp": "path/to/cnn_bp.onnx"},
+            "version": "1.1",
+        }
+        mock_get_json_values.side_effect = lambda path, key: (
+            ["GO:001", "GO:002"] if key == "goterms" else ["BioProcess1",
+                                                           "MolFunc1"])
+        mock_load_go_to_cog.return_value = {}
+
+        mapping_file_path = Path(self.data_dir) / "small_mapping.tsv"
+        if not mapping_file_path.exists():
+            self.skipTest(f"Test data file not found: {mapping_file_path}")
+
+        mock_target_seq = "MFSKATANFVRQIDPEGSLIHVSRVNDSQKLVPMALVVKRNRLWFWQRPKYHPTDFTLSD"
+        mock_coords = np.zeros((len(mock_target_seq), 3))
+        failed_query = "A0A3B4WVX2_Gasdermin_pore_forming"
+
+        def extract_side_effect(structure_string, chain="A", filetype="mmcif"):
+            return (mock_target_seq, mock_coords)
+
+        mock_extract_residues_coordinates.side_effect = extract_side_effect
+
+        mock_cmap = np.random.rand(60, 60)
+
+        def build_cmap_side_effect(alignment_result, **kwargs):
+            if alignment_result.query_name == failed_query:
+                raise ValueError("broken structure")
+            return (alignment_result, mock_cmap)
+
+        mock_build_align_contact_map.side_effect = build_cmap_side_effect
+
+        cnn_queries = []
+        gcn_queries = []
+
+        def forward_pass_side_effect(seqres, cmap=None):
+            if cmap is None:
+                cnn_queries.append(seqres)
+            else:
+                gcn_queries.append(seqres)
+            return np.array([0.92, 0.08], dtype=np.float32)
+
+        mock_predictor_instance = mock_predictor_cls.return_value
+        mock_predictor_instance.forward_pass.side_effect = forward_pass_side_effect
+
+        query_file = QueryFile(filepath=str(self.query_file_path))
+        query_file.load_sequences()
+
+        with tempfile.TemporaryDirectory() as temp_out:
+            output_path = Path(temp_out)
+            predict_protein_function(
+                query_file=query_file,
+                databases=(),
+                weights="path/to/weights",
+                output_path=str(output_path),
+                deepfri_processing_modes=["bp"],
+                skip_matrix=True,
+                custom_mapping_file=str(mapping_file_path))
+
+            with open(output_path / "alignment_summary.tsv", "r") as f:
+                rows = {
+                    line.split("\t")[0]: line
+                    for line in f.read().strip().splitlines()[1:]
+                }
+            self.assertIn(failed_query, rows)
+            self.assertIn("False", rows[failed_query])
+            self.assertGreater(len(gcn_queries), 0)
+            self.assertGreater(len(cnn_queries), 0)
+
+            with open(output_path / "results.tsv", "r") as f:
+                content = f.read()
+            self.assertIn("\tcnn\t", content)
+
 
 if __name__ == '__main__':
     unittest.main()
