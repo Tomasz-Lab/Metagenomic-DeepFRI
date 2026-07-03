@@ -417,6 +417,13 @@ def search_databases(ctx, input, output, db_path, mmseqs_sensitivity,
     help="Scoring matrix for sequence alignment (e.g., VTML80, BLOSUM62).",
 )
 @click.option(
+    "--custom-mapping",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="TSV file mapping query IDs to structure paths. Bypasses database search.",
+)
+
+@click.option(
     "--propagate-go-terms",
     default=False,
     type=bool,
@@ -424,6 +431,7 @@ def search_databases(ctx, input, output, db_path, mmseqs_sensitivity,
     help="Propagate GO terms up the ontology DAG using the true-path rule "
     "(is_a and part_of relations). Downloads go-basic.obo automatically.",
 )
+
 @click.option(
     "--obo-path",
     default=None,
@@ -441,7 +449,7 @@ def predict_function(ctx, input, db_path, weights, output, processing_modes,
                      alignment_gap_extend, remove_intermediate, overwrite,
                      threads, skip_pdb, min_length, max_length, tmpdir,
                      save_structures, save_cmaps, skip_matrix, scoring_matrix,
-                     propagate_go_terms, obo_path):
+                     custom_mapping, propagate_go_terms, obo_path):
     """Predict protein function from sequence."""
 
     logger.info("Starting Metagenomic-DeepFRI.")
@@ -455,28 +463,41 @@ def predict_function(ctx, input, db_path, weights, output, processing_modes,
                                  min_length=min_length,
                                  max_length=max_length)
 
-    deepfri_dbs = hierarchical_database_search(
-        query_file=query_file,
-        output_path=output_path / "database_search",
-        databases=db_path,
-        mmseqs_sensitivity=mmseqs_sensitivity,
-        min_bits=mmseqs_min_bitscore,
-        max_eval=mmseqs_max_evalue,
-        min_ident=mmseqs_min_identity,
-        min_coverage=mmseqs_min_coverage,
-        top_k=top_k,
-        skip_pdb=skip_pdb,
-        overwrite=overwrite,
-        tmpdir=tmpdir,
-        threads=threads)
+    if custom_mapping:
+        if db_path:
+            logger.warning(
+                "--db-path is ignored when --custom-mapping is provided.")
+        deepfri_dbs = ()
+    else:
+        if not db_path:
+            raise click.UsageError(
+                "Provide at least one --db-path or use --custom-mapping.")
+        deepfri_dbs = hierarchical_database_search(
+            query_file=query_file,
+            output_path=output_path / "database_search",
+            databases=db_path,
+            mmseqs_sensitivity=mmseqs_sensitivity,
+            min_bits=mmseqs_min_bitscore,
+            max_eval=mmseqs_max_evalue,
+            min_ident=mmseqs_min_identity,
+            min_coverage=mmseqs_min_coverage,
+            top_k=top_k,
+            skip_pdb=skip_pdb,
+            overwrite=overwrite,
+            tmpdir=tmpdir,
+            threads=threads)
 
-    # refresh query file
-    # hierarchical_database_search filters out aligned sequences
-    # to avoid redundant alignments
+    if not custom_mapping:
+        # refresh query file
+        # hierarchical_database_search filters out aligned sequences
+        # to avoid redundant alignments
+        query_file = load_query_file(query_file=input,
+                                     min_length=min_length,
+                                     max_length=max_length)
 
-    query_file = load_query_file(query_file=input,
-                                 min_length=min_length,
-                                 max_length=max_length)
+    # Reconstruct command string for metadata
+    command_str = " ".join(sys.argv)
+    version_str = importlib.metadata.version("mDeepFRI")
 
     predict_protein_function(
         query_file=query_file,
@@ -493,6 +514,9 @@ def predict_function(ctx, input, db_path, weights, output, processing_modes,
         save_cmaps=save_cmaps,
         skip_matrix=skip_matrix,
         scoring_matrix=scoring_matrix,
+        command_str=command_str,
+        version=version_str,
+        custom_mapping_file=str(custom_mapping) if custom_mapping else None,
         propagate_go_terms=propagate_go_terms,
         obo_path=obo_path)
 

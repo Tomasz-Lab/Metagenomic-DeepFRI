@@ -86,7 +86,7 @@ def generate_fasta(count, filename):
 
 def run_benchmark():
     # generate FASTA file with 10, 100, 1000 and 10,000 sequences
-    counts = [10, 100, 1000, 10000]
+    counts = [10, 100, 1000, 10000, 100_000]
 
     # Create temporary directory for outputs
     temp_dir = Path('benchmark_temp_gpu')
@@ -185,8 +185,11 @@ def run_benchmark():
             cmd = [
                 'conda', 'run', '-n', 'deepfri', 'mDeepFRI',
                 'predict-function', '-i', abs_fasta, '-d',
-                '../data/databases/afdb_swissprot_v4', '-d',
-                '../data/databases/highquality_clust30', '-w', '../models',
+                '../data/databases/afdb_swissprot_v4',
+                '-d',
+                '../data/databases/highquality_clust30',
+                '-w',
+                '../onnx_deepfri_models/',
                 '-o', deepfri_out, '-t', '8'
             ]
 

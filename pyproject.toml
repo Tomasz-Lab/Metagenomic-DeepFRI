@@ -3,7 +3,7 @@ name = "mDeepFRI"
 version = "1.1.10"
 description = "Pipeline for searching and aligning contact maps for proteins, and function prediction with DeepFRI."
 readme = { file = "README.md", content-type = "text/markdown" }
-license = "GPL-3.0-or-later"
+license = "BSD-3-Clause"
 license-files = [
     "LICENSE"
 ]
@@ -31,10 +31,9 @@ dependencies = [
     "pyopal ~=0.7",
     "foldcomp",
     "tqdm",
+    "onnxruntime ~=1.26.0"
     "obonet >=0.3",
     "networkx >=2.6",
-    "onnxruntime-gpu; platform_system != 'Darwin' and platform_machine != 'aarch64' and platform_machine != 'arm64'",
-    "onnxruntime; platform_system == 'Darwin' or platform_machine == 'aarch64' or platform_machine == 'arm64'"
 ]
 
 [project.urls]
@@ -47,6 +46,9 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pre-commit"
+]
+gpu = [
+    "onnxruntime-gpu[cuda,cudnn]~=1.26.0; platform_system != 'Darwin' and platform_machine != 'aarch64' and platform_machine != 'arm64'",
 ]
 
 [project.scripts]

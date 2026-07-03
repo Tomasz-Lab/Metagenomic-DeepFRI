@@ -1,8 +1,7 @@
 <!-- markdownlint-disable-file MD024 MD013 -->
 # 🍳 Metagenomic-DeepFRI [![Stars](https://img.shields.io/github/stars/bioinf-MCB/Metagenomic-DeepFRI.svg?style=social&maxAge=3600&label=Star)](https://github.com/bioinf-MCB/Metagenomic-DeepFRI/stargazers)
 
-[![Support Ukraine](https://img.shields.io/badge/Support-Ukraine-FFD500?style=flat&labelColor=005BBB)](https://u24.gov.ua/)
-[![License](https://img.shields.io/badge/license-GPLv3-blue.svg?style=flat-square&maxAge=2678400)](https://choosealicense.com/licenses/gpl-3.0/)
+[![License](https://img.shields.io/badge/license-BSD%203--Clause-blue.svg?style=flat-square&maxAge=2678400)](https://choosealicense.com/licenses/bsd-3-clause/)
 [![PyPI](https://img.shields.io/pypi/v/mdeepfri.svg?style=flat-square&maxAge=3600&logo=PyPI)](https://pypi.org/project/mdeepfri)
 [![Wheel](https://img.shields.io/pypi/wheel/mdeepfri.svg?style=flat-square&maxAge=3600)](https://pypi.org/project/mdeepfri/#files)
 [![Python Versions](https://img.shields.io/pypi/pyversions/mdeepfri.svg?style=flat-square&maxAge=600&logo=python)](https://pypi.org/project/mdeepfri/#files)
@@ -15,7 +14,8 @@
 
 *A pipeline for annotation of genes with [DeepFRI](https://github.com/flatironinstitute/DeepFRI),
 a deep learning model for functional protein annotation with
-[Gene Ontology (GO) terms](https://geneontology.org/docs/go-annotations/).
+[Gene Ontology (GO) terms](https://geneontology.org/docs/go-annotations/) and
+mapping to [Cluster of Orthologous Groups (COG)](https://www.ncbi.nlm.nih.gov/research/cog) categories.
 It incorporates [FoldComp](https://github.com/steineggerlab/foldcomp)
 databases of predicted protein structures for fast annotation of
 metagenomic gene catalogues.*
@@ -70,6 +70,21 @@ due to download of MMseqs2 binaries.
 ```{code-block} bash
 pip install mdeepfri
 ```
+
+The default install uses CPU ONNX Runtime and does not require CUDA.
+On Linux x86_64, GPU acceleration may still be used automatically when a
+compatible CUDA stack is already present on the system.
+
+For an explicit, self-contained GPU install (Linux x86_64 only), use:
+
+```{code-block} bash
+pip install mdeepfri[gpu]
+```
+
+This pins ONNX Runtime 1.26 with CUDA 12 libraries bundled via pip
+(`nvidia-cuda-runtime-cu12`, `nvidia-cudnn-cu12`, etc.). No system CUDA
+toolkit upgrade is required, but an NVIDIA driver new enough for CUDA 12
+is still needed.
 
 2\. Run and view the help message.
 
@@ -287,26 +302,27 @@ mDeepFRI predict-function -i /path/to/protein/sequences \
 
 If argument `threads` is provided, the app will parallelize certain steps
 (alignment, contact map alignment, functional annotation). GPU is often used
-to speed up neural networks. Metagenomic-DeepFRI takes care of this and, if
-CUDA is installed, `mDeepFRI` will automatically use it for prediction.
-Otherwise, the model will use CPUs.
+to speed up neural networks. By default, `mDeepFRI` runs on CPU. During
+prediction it tries the CUDA execution provider first and falls back to CPU
+if CUDA is unavailable.
 
 **Technical tip:** Single instance of DeepFRI on GPU requires 2GB VRAM.
-Every currently available GPU with CUDA support should be able to run the
-model.
+
+| Install | When to use |
+| --- | --- |
+| `pip install mdeepfri` | Default. Works without CUDA. |
+| `pip install mdeepfri[gpu]` | Linux x86_64 with NVIDIA GPU; bundles CUDA 12 libs (ORT 1.26). |
 
 **Troubleshooting GPU usage:**
-If `onnxruntime` cannot find CUDA libraries despite them being installed,
-you might see errors like:
+If CUDA libraries are not found at runtime, you might see:
 
 ```bash
 [W:onnxruntime:Default, onnxruntime_pybind_state.cc:1013 CreateExecutionProviderFactoryInstance]
 Failed to create CUDAExecutionProvider. Require cuDNN 9.* and CUDA 12.*.
 ```
 
-To fix this, add the library paths to `LD_LIBRARY_PATH`.
-If you installed `nvidia-*` packages via pip,
-you can dynamically find and export the paths:
+Try `pip install mdeepfri[gpu]` first. If the error persists, add library
+paths to `LD_LIBRARY_PATH`:
 
 ```bash
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c 'import os, nvidia.cudnn, nvidia.cublas, nvidia.cuda_runtime; libs=[nvidia.cudnn, nvidia.cublas, nvidia.cuda_runtime]; print(":".join([os.path.join(m.__path__[0], "lib") for m in libs]))')
@@ -329,6 +345,9 @@ in an academic work, please cite the papers behind it:
 - Maranga et al. "Comprehensive Functional Annotation of Metagenomes and
   Microbial Genomes Using a Deep Learning-Based Method" mSystems (2023)
   <https://doi.org/10.1128/msystems.01178-22>
+- Szczerbiak P et al. "Large protein databases reveal structural complementarity
+  and functional locality". Nat. Commun. (2025).
+  <https://doi.org/10.1038/s41467-025-63250-3>
 
 ## 💭 Feedback
 

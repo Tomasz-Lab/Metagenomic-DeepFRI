@@ -24,3 +24,9 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Usage", result.output)
         self.assertIn("mDeepFRI", result.output)
+
+    def test_predict_function_custom_mapping_option(self):
+        """Test that predict-function exposes --custom-mapping."""
+        result = self.runner.invoke(main, ["predict-function", "--help"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("--custom-mapping", result.output)

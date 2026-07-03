@@ -11,6 +11,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 [Unreleased]: https://github.com/bioinf-MCB/Metagenomic-DeepFRI/compare/v1.1.10...HEAD
 
+### Added
+
+- GO term mapping to COG categories, SuperCOGs and Information Content (IC) in output results.
+- `go2cog_USECLO_ALL.tsv` mapping file in assets from [GO2COG](https://github.com/Tomasz-Lab/go2cog)
+
 ## [1.1.10] - 2026-01-16
 
 [1.1.10]: https://github.com/bioinf-MCB/Metagenomic-DeepFRI/compare/v1.1.9...v1.1.10

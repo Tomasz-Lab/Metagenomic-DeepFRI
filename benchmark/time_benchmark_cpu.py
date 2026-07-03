@@ -55,7 +55,8 @@ def generate_fasta(count, filename):
 
 def run_benchmark():
     # generate FASTA file with 10, 100, 1000 and 10,000 sequences
-    counts = [10, 100, 1000, 10000]
+    counts = [10, 100, 1000, 10000, 100_000]
+    warmup_runs = max(0, int(os.environ.get('BENCH_WARMUP_RUNS', '1')))
 
     # Create temporary directory for outputs
     temp_dir = 'benchmark_temp'
@@ -89,7 +90,12 @@ def run_benchmark():
 
     fasta_files = []
 
-    def run_step(cmd, label, result_key, count_value, log_path=None):
+    def run_step(cmd,
+                 label,
+                 result_key,
+                 count_value,
+                 log_path=None,
+                 measure=True):
         print(f"Running: {' '.join(cmd)}")
         start_ts = time.time()
         stdout_target = subprocess.DEVNULL
@@ -125,9 +131,36 @@ def run_benchmark():
                 log_file.close()
         duration = time.time() - start_ts
         print(f"{label} time: {duration:.2f} s")
-        results.append({'count': count_value, result_key: duration})
-        persist_results()
+        if measure:
+            results.append({'count': count_value, result_key: duration})
+            persist_results()
         return duration
+
+    def run_with_warm_cache(cmd,
+                            label,
+                            result_key,
+                            count_value,
+                            log_path=None):
+        # Warmup runs populate file-system and tool-level caches.
+        for run_idx in range(warmup_runs):
+            warm_label = f"{label} warmup {run_idx + 1}/{warmup_runs}"
+            warm_log = (f"{log_path}.warmup{run_idx + 1}.log"
+                        if log_path else None)
+            warm_duration = run_step(cmd,
+                                     warm_label,
+                                     result_key,
+                                     count_value,
+                                     log_path=warm_log,
+                                     measure=False)
+            if warm_duration is None:
+                return None
+
+        return run_step(cmd,
+                        label,
+                        result_key,
+                        count_value,
+                        log_path=log_path,
+                        measure=True)
 
     print("Generating FASTA files...")
     for count in counts:
@@ -159,12 +192,12 @@ def run_benchmark():
                 cmd = [
                     'conda', 'run', '-n', 'eggnog', 'emapper.py', '-i',
                     abs_fasta, '-o', eggnog_out_prefix, '--data_dir',
-                    '../data/databases', '--cpu', '16', '--override',
-                    '--pfam_realign', 'none'
+                    '../data/databases',
+                    '--cpu', '16', '--override', '--pfam_realign', 'none'
                 ] + sens_flags
 
-                run_step(cmd, f"EggNOG {sens_name}",
-                         f'eggnog_{sens_name}_time', count_value)
+                run_with_warm_cache(cmd, f"EggNOG {sens_name}",
+                                    f'eggnog_{sens_name}_time', count_value)
 
             # Benchmarking Metagenomic-DeepFRI
             deepfri_out = abs_fasta.replace('.fasta', '')
@@ -174,16 +207,19 @@ def run_benchmark():
             cmd = [
                 'conda', 'run', '-n', 'deepfri', 'mDeepFRI',
                 'predict-function', '-i', abs_fasta, '-d',
-                '../data/databases/afdb_swissprot_v4', '-d',
-                '../data/databases/highquality_clust30', '-w', '../models',
+                '../data/databases/afdb_swissprot_v4',
+                '-d',
+                '../data/databases/highquality_clust30',
+                '-w',
+                '../onnx_deepfri_models/',
                 '-o', deepfri_out, '-t', '16'
             ]
 
-            run_step(cmd,
-                     "Metagenomic-DeepFRI",
-                     'deepfri_time',
-                     count_value,
-                     log_path=deepfri_log)
+            run_with_warm_cache(cmd,
+                                "Metagenomic-DeepFRI",
+                                'deepfri_time',
+                                count_value,
+                                log_path=deepfri_log)
     finally:
         persist_results()
 
