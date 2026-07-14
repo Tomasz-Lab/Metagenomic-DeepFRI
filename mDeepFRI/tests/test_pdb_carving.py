@@ -15,7 +15,8 @@ from mDeepFRI.bio_utils import (ONE_TO_THREE, build_target_to_query_map,
                                 extract_residues_coordinates,
                                 get_residue_atom_groups, load_structure,
                                 prefetch_template_structures,
-                                resolve_structure_chain, write_carved_pdbs)
+                                resolve_structure_chain,
+                                write_carved_pdbs, _get_template_for_carving)
 
 
 class TestBuildTargetToQueryMap(unittest.TestCase):
@@ -196,12 +197,43 @@ class TestPrefetchAndParallelCarve(unittest.TestCase):
         self.assertEqual(cache[f"custom:{self.structure_path}"][0],
                          self.structure_string)
 
-    @patch("mDeepFRI.bio_utils.Pool")
-    def test_write_carved_pdbs_uses_thread_pool(self, mock_pool):
-        mock_pool_instance = mock_pool.return_value
-        mock_pool_instance.__enter__.return_value = mock_pool_instance
-        mock_pool_instance.starmap.return_value = [("q1", None)]
+    @patch("mDeepFRI.bio_utils.ProcessPoolExecutor")
+    def test_write_carved_pdbs_uses_thread_pool(self, mock_executor):
+        mock_executor_instance = mock_executor.return_value
+        mock_executor_instance.__enter__.return_value = mock_executor_instance
+        mock_executor_instance.map.side_effect = lambda func, shards: [
+            [("q1", None), ("q2", None)][:len(shard)] for shard in shards
+        ]
 
+        alignments = []
+        for index in range(4):
+            alignment = AlignmentResult(
+                query_name=f"q{index}",
+                query_sequence="MFSK",
+                target_name="template",
+                target_sequence="MFSK",
+                alignment="MMMM",
+                db_name="custom_mapping",
+                structure_path=str(self.structure_path),
+            )
+            alignment.gapped_sequence = "MFSK"
+            alignment.gapped_target = "MFSK"
+            alignments.append(alignment)
+        aligned_cmaps = [(alignment, np.zeros((4, 4))) for alignment in alignments]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            carve_dir = Path(temp_dir)
+            count = write_carved_pdbs(aligned_cmaps, (), carve_dir, threads=4)
+            self.assertEqual(count, 4)
+            mock_executor.assert_called_once()
+            call_kwargs = mock_executor.call_args.kwargs
+            self.assertEqual(call_kwargs["max_workers"], 4)
+            shards = mock_executor_instance.map.call_args[0][1]
+            self.assertEqual(len(shards), 4)
+            self.assertEqual(shards[0][0].query_name, "q0")
+            self.assertEqual(shards[0][0].structure_path, str(self.structure_path))
+
+    def test_get_template_for_carving_reads_from_disk(self):
         alignment = AlignmentResult(
             query_name="q1",
             query_sequence="MFSK",
@@ -210,16 +242,13 @@ class TestPrefetchAndParallelCarve(unittest.TestCase):
             alignment="MMMM",
             db_name="custom_mapping",
             structure_path=str(self.structure_path),
-            structure_string=self.structure_string,
         )
-        aligned_cmaps = [(alignment, np.zeros((4, 4)))]
-
-        with tempfile.TemporaryDirectory() as temp_dir:
-            carve_dir = Path(temp_dir)
-            count = write_carved_pdbs(aligned_cmaps, (), carve_dir, threads=4)
-            self.assertEqual(count, 1)
-            mock_pool.assert_called_once_with(4)
-            mock_pool_instance.starmap.assert_called_once()
+        structure_string, filetype, chain = _get_template_for_carving(
+            alignment, ())
+        self.assertEqual(filetype, "mmcif")
+        self.assertEqual(chain, "A")
+        self.assertGreater(len(structure_string), 1000)
+        self.assertEqual(structure_string, self.structure_string)
 
     @patch("mDeepFRI.bio_utils.FOLDCOMP_PATH")
     @patch("mDeepFRI.bio_utils.subprocess.run")
@@ -231,6 +260,7 @@ class TestPrefetchAndParallelCarve(unittest.TestCase):
             carve_dir = temp_path / "carved_pdbs"
             carve_dir.mkdir()
             (carve_dir / "q1.pdb").write_text("ATOM\n", encoding="utf-8")
+            (carve_dir / "q2.pdb").write_text("ATOM\n", encoding="utf-8")
             compress_carved_structures(carve_dir,
                                        temp_path / "carved_pdbs.foldcomp",
                                        threads=3)
@@ -240,6 +270,7 @@ class TestPrefetchAndParallelCarve(unittest.TestCase):
         self.assertIn("-d", args)
         self.assertIn("-t", args)
         self.assertIn("3", args)
+        self.assertFalse(carve_dir.exists())
 
     @patch("mDeepFRI.bio_utils.FOLDCOMP_PATH")
     def test_compress_carved_structures_requires_binary(self,

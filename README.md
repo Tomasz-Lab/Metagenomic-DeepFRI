@@ -320,6 +320,7 @@ Carving runs in parallel and respects `--threads`. Use
 `--compress-structures` to build a FoldComp database at
 `{output_path}/carved_pdbs.foldcomp` from the carved PDB directory
 (requires ``foldcomp_bin``; run ``python setup.py build_binaries --inplace``).
+Individual carved PDB files are deleted after compression succeeds.
 
 To run alignment and carving only (no DeepFRI inference), use
 `--skip-prediction` or pass `-p none`. Weights are not required in that mode.

@@ -21,11 +21,12 @@ import csv
 import datetime
 import io
 import logging
+import multiprocessing
 import pathlib
 import pickle
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from functools import partial
-from multiprocessing import Pool
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
@@ -36,8 +37,9 @@ from mDeepFRI.alignment import (AlignmentResult, align_mmseqs_results,
                                 align_pairwise)
 from mDeepFRI.bio_utils import (build_align_contact_map,
                                 compress_carved_structures,
+                                extract_residue_sequence,
                                 extract_residues_coordinates,
-                                write_carved_pdbs)
+                                write_carved_pdbs, _init_parallel_worker)
 from mDeepFRI.database import Database, build_database
 from mDeepFRI.mmseqs import MMseqsResult, QueryFile
 from mDeepFRI.pdb import create_pdb_mmseqs, extract_calpha_coords
@@ -381,6 +383,114 @@ def _load_custom_mapping_file(mapping_path: pathlib.Path) -> Dict[str, str]:
     return mapping
 
 
+def _align_one_custom_mapping(
+        query_id: str,
+        query_sequence: str,
+        structure_path: str,
+        alignment_gap_open: int,
+        alignment_gap_extend: int,
+        scoring_matrix: str,
+        build_contact_maps: bool,
+        angstrom_contact_threshold: float,
+        generate_contacts: int) -> Tuple[str, Optional[Tuple[AlignmentResult,
+                                                              Optional[np.ndarray]]],
+                                         Optional[str]]:
+    struct_path_obj = pathlib.Path(structure_path)
+    if not struct_path_obj.exists():
+        return query_id, None, f"structure file not found: {structure_path}"
+
+    try:
+        with open(structure_path, "r", encoding="utf-8") as structure_file:
+            structure_string = structure_file.read()
+
+        if struct_path_obj.suffix.lower() in {".cif", ".mmcif"}:
+            filetype = "mmcif"
+        elif struct_path_obj.suffix.lower() == ".pdb":
+            filetype = "pdb"
+        else:
+            filetype = "mmcif"
+
+        if not build_contact_maps:
+            target_sequence = extract_residue_sequence(
+                structure_string,
+                chain="A",
+                filetype=filetype,
+                structure_path=structure_path)
+            coords = None
+        else:
+            target_sequence, coords = extract_residues_coordinates(
+                structure_string,
+                chain="A",
+                filetype=filetype,
+                structure_path=structure_path)
+            if target_sequence is None or coords is None:
+                return query_id, None, (
+                    f"failed to extract structure information from {structure_path}"
+                )
+
+        if target_sequence is None:
+            return query_id, None, (
+                f"failed to extract structure information from {structure_path}")
+
+        alignment_string, identity, query_coverage, target_coverage = align_pairwise(
+            query_sequence,
+            target_sequence,
+            gap_open=alignment_gap_open,
+            gap_extend=alignment_gap_extend,
+            scoring_matrix=scoring_matrix)
+
+        alignment_result = AlignmentResult(
+            query_name=query_id,
+            query_sequence=query_sequence,
+            target_name=struct_path_obj.stem,
+            target_sequence=target_sequence,
+            alignment=alignment_string,
+            query_identity=identity,
+            query_coverage=query_coverage,
+            target_coverage=target_coverage,
+            db_name="custom_mapping",
+            coords=coords,
+            structure_path=structure_path)
+
+        if build_contact_maps:
+            aligned_cmap = build_align_contact_map(
+                alignment_result,
+                threshold=angstrom_contact_threshold,
+                generated_contacts=generate_contacts)
+        else:
+            aligned_cmap = (alignment_result, None)
+
+        return query_id, aligned_cmap, None
+    except Exception as exc:
+        return query_id, None, str(exc)
+
+
+def _align_custom_mapping_shard(
+        work_items: List[Tuple[str, str, str]],
+        alignment_gap_open: int,
+        alignment_gap_extend: int,
+        scoring_matrix: str,
+        build_contact_maps: bool,
+        angstrom_contact_threshold: float,
+        generate_contacts: int,
+) -> List[Tuple[str, Optional[Tuple[AlignmentResult, Optional[np.ndarray]]],
+                Optional[str]]]:
+    return [
+        _align_one_custom_mapping(
+            query_id,
+            query_sequence,
+            structure_path,
+            alignment_gap_open,
+            alignment_gap_extend,
+            scoring_matrix,
+            build_contact_maps,
+            angstrom_contact_threshold,
+            generate_contacts,
+        )
+        for query_id, query_sequence, structure_path in work_items
+    ]
+
+
 def load_custom_alignments_from_mapping(
         mapping_file: str,
         query_file: QueryFile,
@@ -389,7 +499,8 @@ def load_custom_alignments_from_mapping(
         scoring_matrix: str = "VTML80",
         angstrom_contact_threshold: float = 6,
         generate_contacts: int = 2,
-        threads: int = 1) -> List[Tuple[AlignmentResult, np.ndarray]]:
+        threads: int = 1,
+        build_contact_maps: bool = True) -> List[Tuple[AlignmentResult, np.ndarray]]:
     """
     Load custom alignments from a mapping file that associates proteins with structures.
 
@@ -449,90 +560,56 @@ def load_custom_alignments_from_mapping(
     logger.info(f"Loaded {len(mapping)} protein-to-structure mappings.")
 
     aligned_cmaps = []
+    work_items = [
+        (query_id, query_sequence, mapping[query_id])
+        for query_id, query_sequence in query_file.sequences.items()
+        if query_id in mapping
+    ]
 
-    for query_id, query_sequence in query_file.sequences.items():
+    for query_id in query_file.sequences:
         if query_id not in mapping:
             _log_cnn_fallback(query_id,
                               "not found in custom mapping file")
-            continue
 
-        structure_path = mapping[query_id]
-        struct_path_obj = pathlib.Path(structure_path)
+    worker_count = max(1, min(threads, len(work_items))) if work_items else 1
+    if work_items:
+        logger.info(
+            "Aligning %d mapped structure(s) using %d parallel worker process(es).",
+            len(work_items), worker_count)
 
-        if not struct_path_obj.exists():
-            _log_cnn_fallback(
-                query_id, f"structure file not found: {structure_path}")
-            continue
+    alignment_kwargs = dict(
+        alignment_gap_open=int(alignment_gap_open),
+        alignment_gap_extend=int(alignment_gap_extend),
+        scoring_matrix=scoring_matrix,
+        build_contact_maps=build_contact_maps,
+        angstrom_contact_threshold=angstrom_contact_threshold,
+        generate_contacts=generate_contacts,
+    )
 
-        try:
-            # Load structure file
-            with open(structure_path, "r", encoding="utf-8") as f:
-                structure_string = f.read()
-
-            # Determine file type from extension
-            if struct_path_obj.suffix.lower() in {".cif", ".mmcif"}:
-                filetype = "mmcif"
-            elif struct_path_obj.suffix.lower() == ".pdb":
-                filetype = "pdb"
-            else:
-                logger.warning(
-                    f"Unknown file type for {structure_path}; assuming CIF format."
-                )
-                filetype = "mmcif"
-
-            # Extract target sequence and coordinates
-            target_sequence, coords = extract_residues_coordinates(
-                structure_string,
-                chain="A",
-                filetype=filetype,
-                structure_path=structure_path)
-
-            if target_sequence is None or coords is None:
-                _log_cnn_fallback(
-                    query_id,
-                    f"failed to extract structure information from {structure_path}"
-                )
+    if worker_count == 1:
+        shard_results = _align_custom_mapping_shard(work_items,
+                                                    **alignment_kwargs)
+        for query_id, aligned_cmap, error in shard_results:
+            if error is not None:
+                _log_cnn_fallback(query_id,
+                                  f"error loading structure ({error})")
                 continue
-
-            # Perform pairwise alignment
-            alignment_string, identity, query_coverage, target_coverage = align_pairwise(
-                query_sequence,
-                target_sequence,
-                gap_open=int(alignment_gap_open),
-                gap_extend=int(alignment_gap_extend),
-                scoring_matrix=scoring_matrix)
-
-            # Create AlignmentResult object
-            alignment_result = AlignmentResult(
-                query_name=query_id,
-                query_sequence=query_sequence,
-                target_name=struct_path_obj.
-                stem,  # Use filename without extension
-                target_sequence=target_sequence,
-                alignment=alignment_string,
-                query_identity=identity,
-                query_coverage=query_coverage,
-                target_coverage=target_coverage,
-                db_name="custom_mapping",
-                coords=coords,
-                structure_path=structure_path,
-                structure_string=structure_string)
-
-            # Build contact map
-            aligned_cmap = build_align_contact_map(
-                alignment_result,
-                threshold=angstrom_contact_threshold,
-                generated_contacts=generate_contacts)
-
             aligned_cmaps.append(aligned_cmap)
-
-            logger.info(
-                f"Processed {query_id}: aligned to {struct_path_obj.stem} "
-                f"(identity={identity:.3f}, query_cov={query_coverage:.3f})")
-
-        except Exception as e:
-            _log_cnn_fallback(query_id, f"error loading structure ({e})")
-            continue
+    else:
+        ctx = multiprocessing.get_context("fork")
+        shards = [work_items[i::worker_count] for i in range(worker_count)]
+        shards = [shard for shard in shards if shard]
+        align_shard = partial(_align_custom_mapping_shard, **alignment_kwargs)
+        with ProcessPoolExecutor(max_workers=worker_count,
+                                 mp_context=ctx,
+                                 initializer=_init_parallel_worker) as executor:
+            for shard in executor.map(align_shard, shards):
+                for query_id, aligned_cmap, error in shard:
+                    if error is not None:
+                        _log_cnn_fallback(query_id,
+                                          f"error loading structure ({error})")
+                        continue
+                    aligned_cmaps.append(aligned_cmap)
 
     logger.info(
         "Loaded %d structure alignment(s) from custom mapping; "
@@ -559,6 +636,13 @@ def _initialize_processing_modes(modes: List[str],
     if len(filtered_modes) == 0:
         raise ValueError("No processing modes selected.")
     return filtered_modes
+
+
+def _build_contact_map_shard(
+        shard_alignments: List[AlignmentResult],
+        partial_map_align,
+) -> List[Tuple[AlignmentResult, np.ndarray]]:
+    return [partial_map_align(aln) for aln in shard_alignments]
 
 
 def _run_prediction_loop(predictor, data_iterable: iter, data_len: int,
@@ -712,7 +796,8 @@ def predict_protein_function(
             scoring_matrix=scoring_matrix,
             angstrom_contact_threshold=angstrom_contact_threshold,
             generate_contacts=generate_contacts,
-            threads=threads)
+            threads=threads,
+            build_contact_maps=not skip_prediction)
     else:
         # Standard hierarchical database search
         for db in databases:
@@ -795,9 +880,26 @@ def predict_protein_function(
             partial_map_align = partial(build_align_contact_map,
                                         threshold=angstrom_contact_threshold,
                                         generated_contacts=generate_contacts)
+            alignment_values = list(new_alignments.values())
+            contact_worker_count = max(1, min(threads, len(alignment_values)))
+            if contact_worker_count == 1:
+                cmaps = [partial_map_align(aln) for aln in alignment_values]
+            else:
+                ctx = multiprocessing.get_context("fork")
+                contact_shards = [
+                    alignment_values[i::contact_worker_count]
+                    for i in range(contact_worker_count)
+                ]
+                contact_shards = [shard for shard in contact_shards if shard]
+                build_shard = partial(_build_contact_map_shard,
+                                      partial_map_align=partial_map_align)
 
-            with Pool(threads) as p:
-                cmaps = list(p.map(partial_map_align, new_alignments.values()))
+                with ProcessPoolExecutor(max_workers=contact_worker_count,
+                                         mp_context=ctx,
+                                         initializer=_init_parallel_worker) as executor:
+                    cmaps = []
+                    for shard in executor.map(build_shard, contact_shards):
+                        cmaps.extend(shard)
 
             # filter errored contact maps
             # returned as Tuple[AlignmentResult, None] from `retrieve_align_contact_map`
@@ -821,24 +923,7 @@ def predict_protein_function(
             cmap_file = cmap_dir / f"{aln.query_name}.npy"
             np.save(cmap_file, cmap)
 
-    if carve_pdbs:
-        carve_dir = output_path / "carved_pdbs"
-        carved_count = write_carved_pdbs(aligned_cmaps,
-                                         databases,
-                                         carve_dir,
-                                         threads=threads)
-        if compress_structures:
-            if carved_count == 0:
-                logger.warning(
-                    "No carved PDB files to compress; skipping FoldComp compression."
-                )
-            else:
-                compress_carved_structures(
-                    carve_dir,
-                    output_path / "carved_pdbs.foldcomp",
-                    threads=threads)
-
-    aligned_queries = [aln[0].query_name for aln in aligned_cmaps]
+    aligned_queries = [aln.query_name for aln, _ in aligned_cmaps]
     unaligned_queries = {
         query_id: seq
         for query_id, seq in query_file.sequences.items()
@@ -852,9 +937,7 @@ def predict_protein_function(
             ", ".join(unaligned_queries.keys()),
         )
 
-    # WRITE ALIGNMENT RESULTS
     alignment_results_file = output_path / "alignment_summary.tsv"
-
     with open(alignment_results_file, "w", encoding="utf-8") as aln_output:
         tsv_writer = csv.writer(aln_output, delimiter="\t")
         tsv_writer.writerow(ALIGNMENT_HEADER)
@@ -866,6 +949,24 @@ def predict_protein_function(
         for query_id in unaligned_queries:
             tsv_writer.writerow(
                 [query_id, False, np.nan, np.nan, np.nan, np.nan, np.nan])
+
+    if carve_pdbs:
+        carve_dir = output_path / "carved_pdbs"
+        carved_count = write_carved_pdbs(aligned_cmaps,
+                                         databases,
+                                         carve_dir,
+                                         threads=threads,
+                                         release_contact_maps=skip_prediction)
+        if compress_structures:
+            if carved_count == 0:
+                logger.warning(
+                    "No carved PDB files to compress; skipping FoldComp compression."
+                )
+            else:
+                compress_carved_structures(
+                    carve_dir,
+                    output_path / "carved_pdbs.foldcomp",
+                    threads=threads)
 
     if skip_prediction:
         logger.info("Skipping DeepFRI prediction (--skip-prediction).")

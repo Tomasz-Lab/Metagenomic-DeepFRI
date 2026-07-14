@@ -23,7 +23,7 @@ class TestPipelineRegression(unittest.TestCase):
                 "/nfs/cds-peta/exports/biol_micro_cds_gr_sunagawa/scratch/vbezshapkin/Metagenomic-DeepFRI/mDeepFRI/tests/data/small_query.faa"
             )
 
-    @patch("mDeepFRI.pipeline.Pool")
+    @patch("mDeepFRI.pipeline.ProcessPoolExecutor")
     @patch("mDeepFRI.pipeline.load_deepfri_config")
     @patch("mDeepFRI.pipeline.Predictor")
     @patch("mDeepFRI.pipeline.align_mmseqs_results")
@@ -42,7 +42,7 @@ class TestPipelineRegression(unittest.TestCase):
     ):
         # --- Mock setup ---
 
-        # Mock Pool to just execute the function immediately
+        # Mock ProcessPoolExecutor to execute shard functions in-process.
         mock_pool_instance = mock_pool.return_value
         mock_pool_instance.__enter__.return_value = mock_pool_instance
         mock_pool_instance.map.side_effect = lambda func, iterable: [
@@ -146,7 +146,7 @@ class TestPipelineRegression(unittest.TestCase):
             mock_build_align_contact_map.assert_called()
             mock_predictor_instance.forward_pass.assert_called()
 
-    @patch("mDeepFRI.pipeline.Pool")
+    @patch("mDeepFRI.pipeline.ProcessPoolExecutor")
     @patch("mDeepFRI.pipeline.load_deepfri_config")
     @patch("mDeepFRI.pipeline.Predictor")
     @patch("mDeepFRI.pipeline.extract_residues_coordinates")
@@ -354,7 +354,11 @@ class TestPipelineRegression(unittest.TestCase):
         mock_coords = np.zeros((len(mock_target_seq), 3))
         failed_query = "A0A3B4WVX2_Gasdermin_pore_forming"
 
-        def extract_side_effect(structure_string, chain="A", filetype="mmcif"):
+        def extract_side_effect(structure_string,
+                                chain="A",
+                                filetype="mmcif",
+                                structure_path=None,
+                                save_directory=None):
             return (mock_target_seq, mock_coords)
 
         mock_extract_residues_coordinates.side_effect = extract_side_effect

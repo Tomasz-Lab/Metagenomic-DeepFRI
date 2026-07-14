@@ -20,13 +20,16 @@ Functions:
     align_coordinates: Align coordinates based on sequence alignment.
 """
 
+import gc
 import logging
+import multiprocessing
+import os
 import pathlib
 import subprocess
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from io import StringIO
-from multiprocessing import Pool
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Dict, List, Literal, NamedTuple, Optional, Tuple
 
 import foldcomp
 import numpy as np
@@ -40,6 +43,22 @@ from mDeepFRI.contact_map_utils import align_contact_map, pairwise_sqeuclidean
 from mDeepFRI.mmseqs import FOLDCOMP_PATH
 
 logger = logging.getLogger(__name__)
+
+
+def _pin_blas_threads_per_process() -> None:
+    """Avoid oversubscribing CPU when using one process per worker."""
+    for env_var in (
+            "OPENBLAS_NUM_THREADS",
+            "OMP_NUM_THREADS",
+            "MKL_NUM_THREADS",
+            "NUMEXPR_NUM_THREADS",
+            "VECLIB_MAXIMUM_THREADS",
+    ):
+        os.environ[env_var] = "1"
+
+
+def _init_parallel_worker() -> None:
+    _pin_blas_threads_per_process()
 handler = logging.StreamHandler(sys.stdout)
 formatter = logging.Formatter(
     '[%(asctime)s] %(module)s.%(funcName)s %(levelname)s: %(message)s',
@@ -262,16 +281,18 @@ def build_target_to_query_map(gapped_query: str,
 
 def chain_id_from_filename(filename: str) -> Optional[str]:
     """
-    Infer a chain identifier from a template filename suffix.
+    Infer a chain identifier from a PDB-style template filename suffix.
 
     Filenames like ``5aa0_BZ.pdb`` or ``6sxu_BBB.pdb`` encode the chain as the
-    last alphanumeric character of the part after the first underscore
-    (``Z`` and ``B`` respectively).
+    last alphanumeric character of the part after the PDB ID
+    (``Z`` and ``B`` respectively). AlphaFold and other non-PDB names are ignored.
     """
     stem = pathlib.Path(filename).stem
     if "_" not in stem:
         return None
-    suffix = stem.rsplit("_", 1)[1]
+    pdb_id, suffix = stem.rsplit("_", 1)
+    if len(pdb_id) != 4 or not pdb_id.isalnum():
+        return None
     if not suffix:
         return None
     chain_char = suffix[-1]
@@ -399,7 +420,8 @@ def carve_aligned_pdb(alignment: AlignmentResult,
                       structure_string: str,
                       filetype: Literal["mmcif", "pdb"],
                       chain: str = "A",
-                      output_chain: str = "A") -> str:
+                      output_chain: str = "A",
+                      structure: Optional[np.ndarray] = None) -> str:
     """
     Carve a query-aligned PDB from a template structure and PyOpal alignment.
 
@@ -417,7 +439,8 @@ def carve_aligned_pdb(alignment: AlignmentResult,
     Returns:
         PDB file contents as a string.
     """
-    structure = load_structure(structure_string, filetype=filetype)
+    if structure is None:
+        structure = load_structure(structure_string, filetype=filetype)
     residue_groups = get_residue_atom_groups(structure, chain=chain)
     target_to_query = build_target_to_query_map(alignment.gapped_sequence,
                                                 alignment.gapped_target)
@@ -628,8 +651,17 @@ def _resolve_carving_chain(alignment: AlignmentResult, structure_string: str,
 
 def _get_template_for_carving(
         alignment: AlignmentResult,
-        structure_cache: Dict[str, Tuple[str, str]],
         databases: Tuple[object, ...] = ()) -> Tuple[str, str, str]:
+    if alignment.structure_path:
+        struct_path = pathlib.Path(alignment.structure_path)
+        if struct_path.exists():
+            structure_string = struct_path.read_text(encoding="utf-8")
+            filetype = _filetype_from_path(str(struct_path))
+            chain = _alignment_chain(alignment)
+            chain = _resolve_carving_chain(alignment, structure_string,
+                                           filetype, chain)
+            return structure_string, filetype, chain
+
     if alignment.structure_string:
         filetype = "mmcif"
         if alignment.structure_path:
@@ -639,14 +671,6 @@ def _get_template_for_carving(
                                        filetype, chain)
         return alignment.structure_string, filetype, chain
 
-    cache_key = _template_cache_key(alignment)
-    if cache_key in structure_cache:
-        structure_string, filetype = structure_cache[cache_key]
-        chain = _alignment_chain(alignment)
-        chain = _resolve_carving_chain(alignment, structure_string, filetype,
-                                       chain)
-        return structure_string, filetype, chain
-
     structure_string, filetype, chain = resolve_template_structure(
         alignment, databases)
     chain = _resolve_carving_chain(alignment, structure_string, filetype,
@@ -654,18 +678,62 @@ def _get_template_for_carving(
     return structure_string, filetype, chain
 
 
-def _carve_single_job(
+class CarveJob(NamedTuple):
+    query_name: str
+    structure_path: str
+    query_sequence: str
+    gapped_query: str
+    gapped_target: str
+    target_name: str
+    carve_dir: str
+
+
+def _carve_single_job(job: CarveJob) -> Tuple[str, Optional[str]]:
+    try:
+        struct_path = pathlib.Path(job.structure_path)
+        structure_string = struct_path.read_text(encoding="utf-8")
+        filetype = _filetype_from_path(str(struct_path))
+        structure = load_structure(structure_string, filetype=filetype)
+        chain = resolve_structure_chain(
+            structure,
+            str(struct_path),
+            chain_id_from_filename(str(struct_path)) or "A",
+        )
+        alignment = AlignmentResult(
+            query_name=job.query_name,
+            query_sequence=job.query_sequence,
+            target_name=job.target_name,
+            target_sequence="",
+            alignment="",
+        )
+        alignment.gapped_sequence = job.gapped_query
+        alignment.gapped_target = job.gapped_target
+        pdb_content = carve_aligned_pdb(alignment,
+                                        structure_string,
+                                        filetype=filetype,
+                                        chain=chain,
+                                        structure=structure)
+        pdb_path = pathlib.Path(job.carve_dir) / f"{job.query_name}.pdb"
+        with open(pdb_path, "w", encoding="utf-8") as carved_output:
+            carved_output.write(pdb_content)
+        return job.query_name, None
+    except Exception as exc:
+        return job.query_name, str(exc)
+
+
+def _carve_from_database(
         alignment: AlignmentResult,
-        structure_cache: Dict[str, Tuple[str, str]],
         databases: Tuple[object, ...],
         carve_dir: str) -> Tuple[str, Optional[str]]:
     try:
         structure_string, filetype, chain = _get_template_for_carving(
-            alignment, structure_cache, databases)
+            alignment, databases)
+        structure = load_structure(structure_string, filetype=filetype)
         pdb_content = carve_aligned_pdb(alignment,
                                         structure_string,
                                         filetype=filetype,
-                                        chain=chain)
+                                        chain=chain,
+                                        structure=structure)
         pdb_path = pathlib.Path(carve_dir) / f"{alignment.query_name}.pdb"
         with open(pdb_path, "w", encoding="utf-8") as carved_output:
             carved_output.write(pdb_content)
@@ -674,19 +742,37 @@ def _carve_single_job(
         return alignment.query_name, str(exc)
 
 
+def _carve_job_shard(jobs: List[CarveJob]) -> List[Tuple[str, Optional[str]]]:
+    return [_carve_single_job(job) for job in jobs]
+
+
+def _carve_legacy_shard(
+        jobs: List[Tuple[AlignmentResult, Tuple[object, ...], str]]
+) -> List[Tuple[str, Optional[str]]]:
+    return [_carve_from_database(alignment, databases, carve_dir)
+            for alignment, databases, carve_dir in jobs]
+
+
 def write_carved_pdbs(
         aligned_cmaps: List[Tuple[AlignmentResult, np.ndarray]],
         databases: Tuple[object, ...],
         carve_dir: pathlib.Path,
-        threads: int = 1) -> int:
+        threads: int = 1,
+        release_contact_maps: bool = False) -> int:
     """
     Carve and write query-aligned PDB files in parallel.
 
+    Template structures are loaded from ``structure_path`` in each worker
+    process. Jobs carry only the alignment fields required for carving so
+    worker processes can be forked without duplicating contact maps.
+
     Args:
         aligned_cmaps: Aligned structure results from the pipeline.
-        databases: Databases used for template resolution.
+        databases: Unused; kept for API compatibility.
         carve_dir: Output directory for carved PDB files.
         threads: Worker count for parallel carving.
+        release_contact_maps: Drop contact maps and template coordinates
+            from ``aligned_cmaps`` before forking workers.
 
     Returns:
         Number of successfully carved PDB files.
@@ -696,13 +782,61 @@ def write_carved_pdbs(
     if not alignments:
         return 0
 
-    structure_cache = prefetch_template_structures(alignments, databases)
-    jobs = [(aln, structure_cache, databases, str(carve_dir))
-            for aln in alignments]
+    if release_contact_maps:
+        for index, (alignment, _) in enumerate(aligned_cmaps):
+            aligned_cmaps[index] = (alignment, None)
+            alignment.coords = None
+        gc.collect()
+
+    jobs = [
+        CarveJob(alignment.query_name,
+                 alignment.structure_path,
+                 alignment.query_sequence,
+                 alignment.gapped_sequence,
+                 alignment.gapped_target,
+                 alignment.target_name,
+                 str(carve_dir))
+        for alignment in alignments
+        if alignment.structure_path
+    ]
+    legacy_jobs = [(alignment, databases, str(carve_dir))
+                   for alignment in alignments
+                   if not alignment.structure_path]
+    if not jobs and not legacy_jobs:
+        return 0
+
+    worker_count = max(1, min(threads, len(jobs) or len(legacy_jobs)))
+    logger.info("Carving %d structure(s) using %d parallel worker process(es).",
+                len(jobs) + len(legacy_jobs), worker_count)
 
     carved_count = 0
-    with Pool(threads) as pool:
-        results = pool.starmap(_carve_single_job, jobs)
+    results: List[Tuple[str, Optional[str]]] = []
+
+    if worker_count == 1:
+        results.extend(_carve_job_shard(jobs))
+        results.extend(_carve_legacy_shard(legacy_jobs))
+    else:
+        ctx = multiprocessing.get_context("fork")
+        job_shards = [jobs[i::worker_count] for i in range(worker_count)]
+        job_shards = [shard for shard in job_shards if shard]
+        legacy_shards = [legacy_jobs[i::worker_count]
+                         for i in range(worker_count)]
+        legacy_shards = [shard for shard in legacy_shards if shard]
+
+        with ProcessPoolExecutor(max_workers=worker_count,
+                                 mp_context=ctx,
+                                 initializer=_init_parallel_worker) as executor:
+            if job_shards:
+                for shard_index, shard_results in enumerate(
+                        executor.map(_carve_job_shard, job_shards), start=1):
+                    results.extend(shard_results)
+                    logger.info(
+                        "Carved shard %d/%d (%d structure(s) processed).",
+                        shard_index, len(job_shards), len(results))
+            if legacy_shards:
+                for shard_results in executor.map(_carve_legacy_shard,
+                                                  legacy_shards):
+                    results.extend(shard_results)
 
     for query_name, error in results:
         if error is None:
@@ -750,7 +884,15 @@ def compress_carved_structures(carve_dir: pathlib.Path,
         ],
         check=True,
     )
-    logger.info("Compressed carved structures to %s.", output_db)
+    pdb_files = list(carve_dir.glob("*.pdb"))
+    for pdb_file in pdb_files:
+        pdb_file.unlink()
+    if carve_dir.exists() and not any(carve_dir.iterdir()):
+        carve_dir.rmdir()
+
+    logger.info(
+        "Compressed carved structures to %s and removed %d individual PDB file(s).",
+        output_db, len(pdb_files))
 
 
 def calculate_contact_map(coordinates: np.ndarray,
@@ -837,6 +979,24 @@ def load_structure(structure_string: str,
         raise NotImplementedError(f"Filetype {filetype} not supported.")
 
     return structure
+
+
+def extract_residue_sequence(
+        structure_string: str,
+        chain: str = "A",
+        filetype: Literal["mmcif", "pdb"] = "mmcif",
+        structure_path: Optional[str] = None) -> Optional[str]:
+    """Extract one-letter sequence from a structure without loading coordinates."""
+    structure = load_structure(structure_string, filetype=filetype)
+    chain = resolve_structure_chain(structure, structure_path, chain)
+    protein_chain = structure[structure.chain_id == chain]
+    ca_atoms = protein_chain[(protein_chain.atom_name == "CA")
+                             & (protein_chain.hetero == False)]  # noqa
+    if len(ca_atoms) == 0:
+        return None
+    return str(
+        ProteinSequence(
+            [substitutions.get(res, res) for res in ca_atoms.res_name]))
 
 
 def extract_residues_coordinates(
