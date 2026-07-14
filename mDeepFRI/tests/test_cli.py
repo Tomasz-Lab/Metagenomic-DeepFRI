@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 from click.testing import CliRunner
 
@@ -30,3 +31,23 @@ class TestCLI(unittest.TestCase):
         result = self.runner.invoke(main, ["predict-function", "--help"])
         self.assertEqual(result.exit_code, 0)
         self.assertIn("--custom-mapping", result.output)
+
+    def test_compress_structures_requires_carve_pdbs(self):
+        input_file = Path(__file__).parent / "data" / "small_query.faa"
+        result = self.runner.invoke(main, [
+            "predict-function",
+            "-i",
+            str(input_file),
+            "-o",
+            "out",
+            "--compress-structures",
+        ])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("--compress-structures requires --carve-pdbs", result.output)
+
+    def test_predict_function_exposes_skip_and_compress_flags(self):
+        result = self.runner.invoke(main, ["predict-function", "--help"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("--skip-prediction", result.output)
+        self.assertIn("--compress-structures", result.output)
+        self.assertIn("none", result.output)

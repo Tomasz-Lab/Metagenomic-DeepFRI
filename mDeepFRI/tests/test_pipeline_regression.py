@@ -409,6 +409,49 @@ class TestPipelineRegression(unittest.TestCase):
                 content = f.read()
             self.assertIn("\tcnn\t", content)
 
+    @patch("mDeepFRI.pipeline.extract_residues_coordinates")
+    @patch("mDeepFRI.pipeline.build_align_contact_map")
+    @patch("mDeepFRI.pipeline.load_deepfri_config")
+    @patch("mDeepFRI.pipeline.Predictor")
+    def test_skip_prediction_runs_alignment_only(
+        self,
+        mock_predictor_cls,
+        mock_load_config,
+        mock_build_align_contact_map,
+        mock_extract_residues_coordinates,
+    ):
+        mapping_file_path = Path(self.data_dir) / "small_mapping.tsv"
+        mock_target_seq = "MFSKATANFVRQIDPEGSLIHVSRVNDSQKLVPMALVVKRNRLWFWQRPKYHPTDFTLSD"
+        mock_coords = np.zeros((len(mock_target_seq), 3))
+        mock_extract_residues_coordinates.return_value = (mock_target_seq,
+                                                        mock_coords)
+        mock_cmap = np.random.rand(len(mock_target_seq), len(mock_target_seq))
+
+        def build_cmap_side_effect(alignment_result, **kwargs):
+            return (alignment_result, mock_cmap)
+
+        mock_build_align_contact_map.side_effect = build_cmap_side_effect
+
+        query_file = QueryFile(filepath=str(self.query_file_path))
+        query_file.load_sequences()
+
+        with tempfile.TemporaryDirectory() as temp_out:
+            output_path = Path(temp_out)
+            predict_protein_function(
+                query_file=query_file,
+                databases=(),
+                weights=None,
+                output_path=str(output_path),
+                custom_mapping_file=str(mapping_file_path),
+                skip_prediction=True,
+                carve_pdbs=False,
+            )
+
+            self.assertTrue((output_path / "alignment_summary.tsv").exists())
+            self.assertFalse((output_path / "results.tsv").exists())
+            mock_load_config.assert_not_called()
+            mock_predictor_cls.assert_not_called()
+
 
 if __name__ == '__main__':
     unittest.main()

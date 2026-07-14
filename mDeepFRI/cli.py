@@ -340,7 +340,8 @@ def search_databases(ctx, input, output, db_path, mmseqs_sensitivity,
 @click.option(
     "-w",
     "--weights",
-    required=True,
+    required=False,
+    default=None,
     type=click.Path(exists=True,
                     dir_okay=True,
                     file_okay=False,
@@ -351,10 +352,11 @@ def search_databases(ctx, input, output, db_path, mmseqs_sensitivity,
     "-p",
     "--processing-modes",
     default=["bp", "cc", "ec", "mf"],
-    type=click.Choice(["bp", "cc", "ec", "mf"]),
+    type=click.Choice(["bp", "cc", "ec", "mf", "none"]),
     multiple=True,
-    help="Processing modes. Default is all"
-    "(biological process, cellular component, enzyme comission, molecular function).",
+    help="Processing modes. Default is all "
+    "(biological process, cellular component, enzyme comission, molecular function). "
+    "Use 'none' to skip DeepFRI prediction.",
 )
 @click.option(
     "-a",
@@ -403,6 +405,28 @@ def search_databases(ctx, input, output, db_path, mmseqs_sensitivity,
     help="Save contact maps of the top hits.",
 )
 @click.option(
+    "--carve-pdbs",
+    default=False,
+    type=bool,
+    is_flag=True,
+    help="Write query-aligned PDB files carved from template structures "
+    "(unlike --save-structures, which saves raw template files).",
+)
+@click.option(
+    "--compress-structures",
+    default=False,
+    type=bool,
+    is_flag=True,
+    help="Compress carved PDB files into a FoldComp database (requires --carve-pdbs).",
+)
+@click.option(
+    "--skip-prediction",
+    default=False,
+    type=bool,
+    is_flag=True,
+    help="Run alignment and carving only; skip DeepFRI function prediction.",
+)
+@click.option(
     "--skip-matrix",
     default=False,
     type=bool,
@@ -448,11 +472,20 @@ def predict_function(ctx, input, db_path, weights, output, processing_modes,
                      mmseqs_min_coverage, top_k, alignment_gap_open,
                      alignment_gap_extend, remove_intermediate, overwrite,
                      threads, skip_pdb, min_length, max_length, tmpdir,
-                     save_structures, save_cmaps, skip_matrix, scoring_matrix,
+                     save_structures, save_cmaps, carve_pdbs, compress_structures,
+                     skip_prediction, skip_matrix, scoring_matrix,
                      custom_mapping, propagate_go_terms, obo_path):
     """Predict protein function from sequence."""
 
     logger.info("Starting Metagenomic-DeepFRI.")
+
+    skip_prediction = skip_prediction or "none" in processing_modes
+    if compress_structures and not carve_pdbs:
+        raise click.UsageError(
+            "--compress-structures requires --carve-pdbs.")
+    if not skip_prediction and weights is None:
+        raise click.UsageError(
+            "Provide --weights or use --skip-prediction / -p none.")
 
     output_path = Path(output)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -502,7 +535,7 @@ def predict_function(ctx, input, db_path, weights, output, processing_modes,
     predict_protein_function(
         query_file=query_file,
         databases=deepfri_dbs,
-        weights=weights,
+        weights=str(weights) if weights is not None else None,
         output_path=output_path,
         deepfri_processing_modes=processing_modes,
         angstrom_contact_threshold=angstrom_contact_thresh,
@@ -512,6 +545,9 @@ def predict_function(ctx, input, db_path, weights, output, processing_modes,
         remove_intermediate=remove_intermediate,
         save_structures=save_structures,
         save_cmaps=save_cmaps,
+        carve_pdbs=carve_pdbs,
+        compress_structures=compress_structures,
+        skip_prediction=skip_prediction,
         skip_matrix=skip_matrix,
         scoring_matrix=scoring_matrix,
         command_str=command_str,

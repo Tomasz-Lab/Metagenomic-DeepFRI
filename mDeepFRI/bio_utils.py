@@ -21,19 +21,23 @@ Functions:
 """
 
 import logging
+import pathlib
+import subprocess
 import sys
 from io import StringIO
-from typing import List, Literal, Optional, Tuple
+from multiprocessing import Pool
+from typing import Dict, List, Literal, Optional, Tuple
 
 import foldcomp
 import numpy as np
 from biotite.sequence import ProteinSequence
-from biotite.structure import get_chains
+from biotite.structure import concatenate, get_chains
 from biotite.structure.io.pdb import PDBFile
 from biotite.structure.io.pdbx import CIFFile, get_structure
 
 from mDeepFRI.alignment import AlignmentResult
 from mDeepFRI.contact_map_utils import align_contact_map, pairwise_sqeuclidean
+from mDeepFRI.mmseqs import FOLDCOMP_PATH
 
 logger = logging.getLogger(__name__)
 handler = logging.StreamHandler(sys.stdout)
@@ -192,6 +196,562 @@ substitutions = {
     'TYY': 'TYR'
 }
 
+ONE_TO_THREE = {
+    "A": "ALA",
+    "R": "ARG",
+    "N": "ASN",
+    "D": "ASP",
+    "C": "CYS",
+    "Q": "GLN",
+    "E": "GLU",
+    "G": "GLY",
+    "H": "HIS",
+    "I": "ILE",
+    "L": "LEU",
+    "K": "LYS",
+    "M": "MET",
+    "F": "PHE",
+    "P": "PRO",
+    "S": "SER",
+    "T": "THR",
+    "W": "TRP",
+    "Y": "TYR",
+    "V": "VAL",
+    "U": "SEC",
+    "O": "PYL",
+    "X": "UNK",
+}
+
+
+def build_target_to_query_map(gapped_query: str,
+                              gapped_target: str) -> list[int]:
+    """
+    Map template residue indices to query indices from a gapped alignment.
+
+    Mirrors the column-wise walk in ``align_contact_map`` without synthetic
+    contacts. Template residues aligned to query gaps receive ``-1``.
+
+    Args:
+        gapped_query: Query sequence with gap characters.
+        gapped_target: Target sequence with gap characters.
+
+    Returns:
+        List where index is the template residue index (0-based CA order)
+        and value is the query residue index or ``-1``.
+    """
+    if len(gapped_query) != len(gapped_target):
+        raise ValueError("Gapped query and target must have equal length.")
+
+    target_to_query: list[int] = []
+    query_idx = 0
+    target_idx = 0
+
+    for q_char, t_char in zip(gapped_query, gapped_target):
+        if q_char == "-":
+            target_to_query.append(-1)
+            target_idx += 1
+        elif t_char == "-":
+            query_idx += 1
+        else:
+            target_to_query.append(query_idx)
+            query_idx += 1
+            target_idx += 1
+
+    return target_to_query
+
+
+def chain_id_from_filename(filename: str) -> Optional[str]:
+    """
+    Infer a chain identifier from a template filename suffix.
+
+    Filenames like ``5aa0_BZ.pdb`` or ``6sxu_BBB.pdb`` encode the chain as the
+    last alphanumeric character of the part after the first underscore
+    (``Z`` and ``B`` respectively).
+    """
+    stem = pathlib.Path(filename).stem
+    if "_" not in stem:
+        return None
+    suffix = stem.rsplit("_", 1)[1]
+    if not suffix:
+        return None
+    chain_char = suffix[-1]
+    if chain_char.isalnum():
+        return chain_char
+    return None
+
+
+def resolve_structure_chain(
+        structure: np.ndarray,
+        structure_path: Optional[str] = None,
+        chain: str = "A") -> str:
+    """
+    Resolve the chain ID to use for a template structure.
+
+    Prefers ``chain`` when present, otherwise parses ``structure_path`` using
+    :func:`chain_id_from_filename`, trying case variants for letter chains.
+    """
+    chains = list(get_chains(structure))
+    if chain in chains:
+        return chain
+
+    if structure_path:
+        candidate = chain_id_from_filename(structure_path)
+        if candidate is not None:
+            for variant in (candidate, candidate.lower(), candidate.upper()):
+                if variant in chains:
+                    return variant
+
+    if chain != "A":
+        raise ValueError(
+            f"Chain {chain!r} not found in structure (available: {chains}).")
+
+    if len(chains) == 1:
+        return chains[0]
+
+    best_chain = None
+    best_count = -1
+    for chain_id in chains:
+        ca_count = np.sum((structure.chain_id == chain_id)
+                          & (structure.atom_name == "CA")
+                          & (structure.hetero == False))  # noqa
+        if ca_count > best_count:
+            best_count = ca_count
+            best_chain = chain_id
+
+    if best_chain is not None and best_count > 0:
+        return best_chain
+
+    raise ValueError(
+        f"Chain {chain!r} not found in structure (available: {chains}).")
+
+
+def get_residue_atom_groups(structure: np.ndarray,
+                            chain: str = "A") -> list[np.ndarray]:
+    """
+    Group all atoms by residue in CA-atom order.
+
+    Uses the same CA ordering as :func:`get_residues_coordinates`.
+
+    Args:
+        structure: Biotite atom array for the structure.
+        chain: Chain identifier to extract.
+
+    Returns:
+        List of atom arrays, one per residue in CA order.
+    """
+    chains = get_chains(structure)
+    if chain not in chains:
+        raise ValueError(f"Chain {chain} not found in structure.")
+
+    protein_chain = structure[structure.chain_id == chain]
+    ca_atoms = protein_chain[(protein_chain.atom_name == "CA")
+                             & (protein_chain.hetero == False)]  # noqa
+
+    groups: list[np.ndarray] = []
+    for ca_atom in ca_atoms:
+        residue_mask = ((protein_chain.chain_id == ca_atom.chain_id)
+                        & (protein_chain.res_id == ca_atom.res_id)
+                        & (protein_chain.ins_code == ca_atom.ins_code))
+        groups.append(protein_chain[residue_mask])
+
+    return groups
+
+
+def _query_residue_to_three_letter(residue: str) -> str:
+    return ONE_TO_THREE.get(residue.upper(), "UNK")
+
+
+def _format_seqres_records(query_sequence: str, chain: str = "A") -> list[str]:
+    three_letter = [
+        _query_residue_to_three_letter(residue)
+        for residue in query_sequence
+    ]
+    total = len(three_letter)
+    lines: list[str] = []
+    for start in range(0, total, 13):
+        chunk = three_letter[start:start + 13]
+        line_num = start // 13 + 1
+        residue_names = " ".join(f"{name:>3}" for name in chunk)
+        lines.append(
+            f"SEQRES{line_num:4d} {chain} {total:4d}  {residue_names}")
+    return lines
+
+
+def _format_carved_pdb_header(alignment: AlignmentResult,
+                              chain: str = "A") -> list[str]:
+    template_id = alignment.target_name
+    query_id = alignment.query_name
+    remarks = [
+        "REMARK   1 CARVED BY MDEEPFRI",
+        f"REMARK   1 TEMPLATE STRUCTURE: {template_id}",
+        f"REMARK   1 QUERY SEQUENCE: {query_id}",
+        "REMARK   1 ALIGNMENT METHOD: PYOPAL GLOBAL NEEDLEMAN-WUNSCH",
+        "REMARK   1 RESIDUE NAMES FOLLOW THE QUERY SEQUENCE; ATOM",
+        "REMARK   1 COORDINATES AND ATOM TYPES ARE TRANSFERRED FROM THE",
+        "REMARK   1 TEMPLATE. RESIDUE IDENTITY MAY NOT MATCH ATOM GEOMETRY.",
+        "REMARK   1 QUERY INSERTIONS (GAPS IN TEMPLATE ALIGNMENT) APPEAR IN",
+        "REMARK   1 SEQRES ONLY AND HAVE NO ATOM COORDINATES.",
+    ]
+    return remarks + _format_seqres_records(alignment.query_sequence, chain)
+
+
+def carve_aligned_pdb(alignment: AlignmentResult,
+                      structure_string: str,
+                      filetype: Literal["mmcif", "pdb"],
+                      chain: str = "A",
+                      output_chain: str = "A") -> str:
+    """
+    Carve a query-aligned PDB from a template structure and PyOpal alignment.
+
+    Coordinates are transferred from mapped template residues. Residue names
+    and numbering follow the query sequence (1-based). Query insertions aligned
+    to template gaps are included in SEQRES only.
+
+    Args:
+        alignment: Pairwise alignment with gapped sequences.
+        structure_string: Template structure file contents.
+        filetype: ``"pdb"`` or ``"mmcif"``.
+        chain: Chain to read from the template structure.
+        output_chain: Chain identifier for the carved PDB.
+
+    Returns:
+        PDB file contents as a string.
+    """
+    structure = load_structure(structure_string, filetype=filetype)
+    residue_groups = get_residue_atom_groups(structure, chain=chain)
+    target_to_query = build_target_to_query_map(alignment.gapped_sequence,
+                                                alignment.gapped_target)
+
+    if len(residue_groups) != len(target_to_query):
+        raise ValueError(
+            f"Template residue count ({len(residue_groups)}) does not match "
+            f"alignment target length ({len(target_to_query)}).")
+
+    carved_groups: list[np.ndarray] = []
+    for target_idx, query_idx in enumerate(target_to_query):
+        if query_idx < 0:
+            continue
+
+        residue_atoms = residue_groups[target_idx].copy()
+        three_letter = _query_residue_to_three_letter(
+            alignment.query_sequence[query_idx])
+        residue_atoms.res_name[:] = three_letter
+        residue_atoms.res_id[:] = query_idx + 1
+        residue_atoms.chain_id[:] = np.full(len(residue_atoms),
+                                            output_chain,
+                                            dtype=residue_atoms.chain_id.dtype)
+        carved_groups.append(residue_atoms)
+
+    header_lines = _format_carved_pdb_header(alignment, chain=output_chain)
+    if not carved_groups:
+        atom_section = ""
+    else:
+        carved_structure = concatenate(carved_groups)
+        pdb_file = PDBFile()
+        pdb_file.set_structure(carved_structure)
+        atom_buffer = StringIO()
+        pdb_file.write(atom_buffer)
+        atom_section = atom_buffer.getvalue()
+
+    return "\n".join(header_lines) + "\n" + atom_section
+
+
+def resolve_template_structure(
+        alignment: AlignmentResult,
+        databases: Tuple[object, ...] = ()) -> Tuple[str, str, str]:
+    """
+    Load the template structure used for an alignment.
+
+    Args:
+        alignment: Alignment result with database metadata.
+        databases: FoldComp/PDB databases from the pipeline search.
+
+    Returns:
+        Tuple of structure string, filetype (``"pdb"`` or ``"mmcif"``), and
+        chain identifier.
+    """
+    if alignment.db_name == "custom_mapping":
+        if not alignment.structure_path:
+            raise ValueError(
+                f"No structure path recorded for {alignment.query_name}.")
+        struct_path = pathlib.Path(alignment.structure_path)
+        if not struct_path.exists():
+            raise FileNotFoundError(
+                f"Structure file not found: {alignment.structure_path}")
+        structure_string = struct_path.read_text(encoding="utf-8")
+        suffix = struct_path.suffix.lower()
+        if suffix in {".cif", ".mmcif"}:
+            filetype = "mmcif"
+        elif suffix == ".pdb":
+            filetype = "pdb"
+        else:
+            filetype = "mmcif"
+        chain = chain_id_from_filename(str(struct_path)) or "A"
+        return structure_string, filetype, chain
+
+    if alignment.db_name and "pdb100" in alignment.db_name:
+        from mDeepFRI.pdb import get_pdb_structure
+
+        target_id = alignment.target_name.rsplit(".", 1)[0]
+        pdb_id, _ = target_id.upper().split("_", 1)
+        chain = chain_id_from_filename(target_id) or "A"
+        structure_string = get_pdb_structure(pdb_id.lower())
+        return structure_string, "mmcif", chain
+
+    db = next((db for db in databases if db.name == alignment.db_name), None)
+    if db is None:
+        raise ValueError(
+            f"Database '{alignment.db_name}' not found for "
+            f"{alignment.query_name}.")
+
+    target_id = alignment.target_name.rsplit(".", 1)[0]
+    suffix = foldcomp_sniff_suffix(target_id, str(db.foldcomp_db))
+    if suffix:
+        target_id = f"{target_id}{suffix}"
+
+    with foldcomp.open(str(db.foldcomp_db), ids=[target_id]) as struct_db:
+        for _, structure_string in struct_db:
+            return structure_string, "pdb", "A"
+
+    raise ValueError(
+        f"Structure '{alignment.target_name}' not found in {alignment.db_name}."
+    )
+
+
+def _alignment_chain(alignment: AlignmentResult) -> str:
+    if alignment.db_name == "custom_mapping":
+        if alignment.structure_path:
+            return chain_id_from_filename(alignment.structure_path) or "A"
+        return "A"
+    target_id = alignment.target_name.rsplit(".", 1)[0]
+    if alignment.db_name and "pdb100" in alignment.db_name:
+        return chain_id_from_filename(target_id) or "A"
+    return "A"
+
+
+def _template_cache_key(alignment: AlignmentResult) -> str:
+    if alignment.db_name == "custom_mapping":
+        return f"custom:{alignment.structure_path}"
+    target_id = alignment.target_name.rsplit(".", 1)[0]
+    if alignment.db_name and "pdb100" in alignment.db_name:
+        pdb_id, _ = target_id.upper().split("_", 1)
+        return f"pdb100:{pdb_id.lower()}"
+    return f"foldcomp:{alignment.db_name}:{target_id}"
+
+
+def _filetype_from_path(structure_path: str) -> Literal["mmcif", "pdb"]:
+    suffix = pathlib.Path(structure_path).suffix.lower()
+    if suffix in {".cif", ".mmcif"}:
+        return "mmcif"
+    if suffix == ".pdb":
+        return "pdb"
+    return "mmcif"
+
+
+def prefetch_template_structures(
+        alignments: List[AlignmentResult],
+        databases: Tuple[object, ...] = ()) -> Dict[str, Tuple[str, str]]:
+    """
+    Prefetch unique template structures into an in-memory cache.
+
+    Returns:
+        Mapping from template cache key to ``(structure_string, filetype)``.
+        Chain identifiers are resolved per alignment via :func:`_alignment_chain`.
+    """
+    cache: Dict[str, Tuple[str, str]] = {}
+
+    for aln in alignments:
+        if aln.structure_string and aln.structure_path:
+            cache[_template_cache_key(aln)] = (
+                aln.structure_string,
+                _filetype_from_path(aln.structure_path),
+            )
+
+    custom_paths = {
+        aln.structure_path
+        for aln in alignments
+        if aln.db_name == "custom_mapping" and aln.structure_path
+        and _template_cache_key(aln) not in cache
+    }
+    for structure_path in custom_paths:
+        struct_path = pathlib.Path(structure_path)
+        cache[f"custom:{structure_path}"] = (
+            struct_path.read_text(encoding="utf-8"),
+            _filetype_from_path(structure_path),
+        )
+
+    pdb_ids = {
+        aln.target_name.rsplit(".", 1)[0].upper().split("_", 1)[0].lower()
+        for aln in alignments
+        if aln.db_name and "pdb100" in aln.db_name
+    }
+    if pdb_ids:
+        from mDeepFRI.pdb import get_pdb_structure
+
+        for pdb_id in pdb_ids:
+            cache[f"pdb100:{pdb_id}"] = (get_pdb_structure(pdb_id), "mmcif")
+
+    foldcomp_by_db: Dict[str, set[str]] = {}
+    for aln in alignments:
+        if (aln.db_name == "custom_mapping"
+                or (aln.db_name and "pdb100" in aln.db_name)):
+            continue
+        target_id = aln.target_name.rsplit(".", 1)[0]
+        foldcomp_by_db.setdefault(aln.db_name, set()).add(target_id)
+
+    db_by_name = {db.name: db for db in databases}
+    for db_name, target_ids in foldcomp_by_db.items():
+        db = db_by_name.get(db_name)
+        if db is None:
+            continue
+        ids = list(target_ids)
+        suffix = foldcomp_sniff_suffix(ids[0], str(db.foldcomp_db))
+        if suffix:
+            ids = [f"{target_id}{suffix}" for target_id in ids]
+        with foldcomp.open(str(db.foldcomp_db), ids=ids) as struct_db:
+            for idx, structure_string in struct_db:
+                base_id = idx.removesuffix(suffix) if suffix else idx
+                cache[f"foldcomp:{db_name}:{base_id}"] = (structure_string,
+                                                           "pdb")
+
+    return cache
+
+
+def _resolve_carving_chain(alignment: AlignmentResult, structure_string: str,
+                           filetype: str, chain: str) -> str:
+    structure_path = alignment.structure_path
+    if not structure_path and "_" in alignment.target_name:
+        structure_path = alignment.target_name
+    structure = load_structure(structure_string, filetype=filetype)
+    return resolve_structure_chain(structure, structure_path, chain)
+
+
+def _get_template_for_carving(
+        alignment: AlignmentResult,
+        structure_cache: Dict[str, Tuple[str, str]],
+        databases: Tuple[object, ...] = ()) -> Tuple[str, str, str]:
+    if alignment.structure_string:
+        filetype = "mmcif"
+        if alignment.structure_path:
+            filetype = _filetype_from_path(alignment.structure_path)
+        chain = _alignment_chain(alignment)
+        chain = _resolve_carving_chain(alignment, alignment.structure_string,
+                                       filetype, chain)
+        return alignment.structure_string, filetype, chain
+
+    cache_key = _template_cache_key(alignment)
+    if cache_key in structure_cache:
+        structure_string, filetype = structure_cache[cache_key]
+        chain = _alignment_chain(alignment)
+        chain = _resolve_carving_chain(alignment, structure_string, filetype,
+                                       chain)
+        return structure_string, filetype, chain
+
+    structure_string, filetype, chain = resolve_template_structure(
+        alignment, databases)
+    chain = _resolve_carving_chain(alignment, structure_string, filetype,
+                                   chain)
+    return structure_string, filetype, chain
+
+
+def _carve_single_job(
+        alignment: AlignmentResult,
+        structure_cache: Dict[str, Tuple[str, str]],
+        databases: Tuple[object, ...],
+        carve_dir: str) -> Tuple[str, Optional[str]]:
+    try:
+        structure_string, filetype, chain = _get_template_for_carving(
+            alignment, structure_cache, databases)
+        pdb_content = carve_aligned_pdb(alignment,
+                                        structure_string,
+                                        filetype=filetype,
+                                        chain=chain)
+        pdb_path = pathlib.Path(carve_dir) / f"{alignment.query_name}.pdb"
+        with open(pdb_path, "w", encoding="utf-8") as carved_output:
+            carved_output.write(pdb_content)
+        return alignment.query_name, None
+    except Exception as exc:
+        return alignment.query_name, str(exc)
+
+
+def write_carved_pdbs(
+        aligned_cmaps: List[Tuple[AlignmentResult, np.ndarray]],
+        databases: Tuple[object, ...],
+        carve_dir: pathlib.Path,
+        threads: int = 1) -> int:
+    """
+    Carve and write query-aligned PDB files in parallel.
+
+    Args:
+        aligned_cmaps: Aligned structure results from the pipeline.
+        databases: Databases used for template resolution.
+        carve_dir: Output directory for carved PDB files.
+        threads: Worker count for parallel carving.
+
+    Returns:
+        Number of successfully carved PDB files.
+    """
+    carve_dir.mkdir(parents=True, exist_ok=True)
+    alignments = [aln for aln, _ in aligned_cmaps]
+    if not alignments:
+        return 0
+
+    structure_cache = prefetch_template_structures(alignments, databases)
+    jobs = [(aln, structure_cache, databases, str(carve_dir))
+            for aln in alignments]
+
+    carved_count = 0
+    with Pool(threads) as pool:
+        results = pool.starmap(_carve_single_job, jobs)
+
+    for query_name, error in results:
+        if error is None:
+            carved_count += 1
+        else:
+            logger.warning("Failed to carve PDB for %s: %s", query_name, error)
+
+    logger.info("Wrote %d carved PDB file(s) to %s.", carved_count, carve_dir)
+    return carved_count
+
+
+def compress_carved_structures(carve_dir: pathlib.Path,
+                               output_db: pathlib.Path,
+                               threads: int = 1) -> None:
+    """
+    Compress carved PDB files into a FoldComp database via ``foldcomp_bin``.
+
+    Args:
+        carve_dir: Directory containing carved ``*.pdb`` files.
+        output_db: Output FoldComp database path.
+        threads: Thread count passed to ``foldcomp compress -t``.
+    """
+    if not any(carve_dir.glob("*.pdb")):
+        logger.warning("No PDB files found in %s; skipping compression.",
+                       carve_dir)
+        return
+
+    foldcomp_bin = FOLDCOMP_PATH
+    if not foldcomp_bin.exists():
+        raise FileNotFoundError(
+            f"FoldComp binary not found at {foldcomp_bin}. "
+            "Run `python setup.py build_binaries --inplace` before using "
+            "--compress-structures.")
+
+    subprocess.run(
+        [
+            str(foldcomp_bin),
+            "compress",
+            "-t",
+            str(threads),
+            "-d",
+            "-y",
+            str(carve_dir),
+            str(output_db),
+        ],
+        check=True,
+    )
+    logger.info("Compressed carved structures to %s.", output_db)
+
 
 def calculate_contact_map(coordinates: np.ndarray,
                           threshold=6.0,
@@ -227,21 +787,21 @@ def calculate_contact_map(coordinates: np.ndarray,
     return cmap
 
 
-def get_residues_coordinates(structure: np.ndarray, chain: str = "A"):
+def get_residues_coordinates(structure: np.ndarray,
+                             chain: str = "A",
+                             structure_path: Optional[str] = None):
     """
     Retrieves residues and coordinates from biotite structure.
 
     Args:
         structure (np.ndarray): Structure file read into string.
+        chain: Preferred chain identifier.
+        structure_path: Optional path used to infer chain from filename.
 
     Returns:
         Tuple[str, np.ndarray]: Tuple of residues and coordinates.
     """
-
-    chains = get_chains(structure)
-    if chain not in chains:
-        raise ValueError(f"Chain {chain} not found in structure.")
-
+    chain = resolve_structure_chain(structure, structure_path, chain)
     protein_chain = structure[structure.chain_id == chain]
     # extract CA atoms coordinates
     ca_atoms = protein_chain[(protein_chain.atom_name == "CA")
@@ -283,6 +843,7 @@ def extract_residues_coordinates(
         structure_string: str,
         chain: str = "A",
         filetype: Literal["mmcif", "pdb"] = "mmcif",
+        structure_path: Optional[str] = None,
         save_directory: Optional[str] = None) -> Tuple[str, np.ndarray]:
     """
     Extracts residues and coordinates from structural string.
@@ -297,7 +858,8 @@ def extract_residues_coordinates(
     """
 
     structure = load_structure(structure_string, filetype=filetype)
-    residues, coords = get_residues_coordinates(structure, chain=chain)
+    residues, coords = get_residues_coordinates(
+        structure, chain=chain, structure_path=structure_path)
 
     return (residues, coords)
 

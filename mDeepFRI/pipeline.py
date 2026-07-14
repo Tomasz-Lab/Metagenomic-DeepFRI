@@ -35,7 +35,9 @@ from mDeepFRI import DEEPFRI_MODES
 from mDeepFRI.alignment import (AlignmentResult, align_mmseqs_results,
                                 align_pairwise)
 from mDeepFRI.bio_utils import (build_align_contact_map,
-                                extract_residues_coordinates)
+                                compress_carved_structures,
+                                extract_residues_coordinates,
+                                write_carved_pdbs)
 from mDeepFRI.database import Database, build_database
 from mDeepFRI.mmseqs import MMseqsResult, QueryFile
 from mDeepFRI.pdb import create_pdb_mmseqs, extract_calpha_coords
@@ -313,6 +315,72 @@ def _log_cnn_fallback(query_id: str, reason: str) -> None:
     )
 
 
+def _detect_mapping_delimiter(header_line: str) -> str:
+    tab_count = header_line.count("\t")
+    comma_count = header_line.count(",")
+    if tab_count > comma_count:
+        return "\t"
+    return ","
+
+
+def _resolve_structure_path(structure_ref: str,
+                            mapping_path: pathlib.Path) -> pathlib.Path:
+    struct_path = pathlib.Path(structure_ref)
+    candidates = []
+
+    if struct_path.is_absolute():
+        candidates.append(struct_path)
+    else:
+        candidates.append(mapping_path.parent / struct_path)
+
+    candidates.append(mapping_path.parent / "structures" / struct_path.name)
+
+    if struct_path.suffix == "":
+        for ext in (".pdb", ".cif", ".mmcif"):
+            candidates.append(
+                mapping_path.parent / "structures" / f"{structure_ref}{ext}")
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    return candidates[0]
+
+
+def _load_custom_mapping_file(mapping_path: pathlib.Path) -> Dict[str, str]:
+    mapping: Dict[str, str] = {}
+
+    with open(mapping_path, "r", encoding="utf-8") as f:
+        header_line = f.readline()
+        if not header_line.strip():
+            return mapping
+
+        delimiter = _detect_mapping_delimiter(header_line)
+        headers = [
+            column.strip().lower()
+            for column in header_line.strip().split(delimiter)
+        ]
+
+        if "structure_path" in headers:
+            query_col = headers.index("query") if "query" in headers else 0
+            path_col = headers.index("structure_path")
+        else:
+            query_col = 0
+            path_col = 1
+
+        reader = csv.reader(f, delimiter=delimiter)
+        for row in reader:
+            if len(row) <= max(query_col, path_col):
+                logger.warning(f"Skipping malformed mapping line: {row}")
+                continue
+            protein_id = row[query_col].strip()
+            structure_ref = row[path_col].strip()
+            mapping[protein_id] = str(
+                _resolve_structure_path(structure_ref, mapping_path))
+
+    return mapping
+
+
 def load_custom_alignments_from_mapping(
         mapping_file: str,
         query_file: QueryFile,
@@ -376,19 +444,7 @@ def load_custom_alignments_from_mapping(
     if not mapping_path.exists():
         raise FileNotFoundError(f"Mapping file not found: {mapping_file}")
 
-    with open(mapping_path, "r", encoding="utf-8") as f:
-        reader = csv.reader(f, delimiter="\t")
-        next(reader)  # Skip header
-        for row in reader:
-            if len(row) < 2:
-                logger.warning(f"Skipping malformed mapping line: {row}")
-                continue
-            protein_id, structure_path = row[0], row[1]
-            # Handle relative paths relative to the mapping file directory
-            struct_path = pathlib.Path(structure_path)
-            if not struct_path.is_absolute():
-                struct_path = mapping_path.parent / struct_path
-            mapping[protein_id] = str(struct_path)
+    mapping = _load_custom_mapping_file(mapping_path)
 
     logger.info(f"Loaded {len(mapping)} protein-to-structure mappings.")
 
@@ -426,7 +482,10 @@ def load_custom_alignments_from_mapping(
 
             # Extract target sequence and coordinates
             target_sequence, coords = extract_residues_coordinates(
-                structure_string, chain="A", filetype=filetype)
+                structure_string,
+                chain="A",
+                filetype=filetype,
+                structure_path=structure_path)
 
             if target_sequence is None or coords is None:
                 _log_cnn_fallback(
@@ -455,7 +514,9 @@ def load_custom_alignments_from_mapping(
                 query_coverage=query_coverage,
                 target_coverage=target_coverage,
                 db_name="custom_mapping",
-                coords=coords)
+                coords=coords,
+                structure_path=structure_path,
+                structure_string=structure_string)
 
             # Build contact map
             aligned_cmap = build_align_contact_map(
@@ -533,7 +594,7 @@ def _run_prediction_loop(predictor, data_iterable: iter, data_len: int,
 def predict_protein_function(
         query_file: QueryFile,
         databases: Tuple[Database],
-        weights: str,
+        weights: Optional[str],
         output_path: str,
         deepfri_processing_modes: List[str] = ["ec", "bp", "mf", "cc"],
         angstrom_contact_threshold: float = 6,
@@ -544,6 +605,9 @@ def predict_protein_function(
         threads: int = 1,
         save_structures: bool = False,
         save_cmaps: bool = False,
+        carve_pdbs: bool = False,
+        compress_structures: bool = False,
+        skip_prediction: bool = False,
         skip_matrix: bool = False,
         scoring_matrix: str = "VTML80",
         command_str: Optional[str] = None,
@@ -567,10 +631,11 @@ def predict_protein_function(
         databases (Tuple[Database], optional): Tuple of database objects to search against.
             Only used if custom_mapping_file is not provided.
             Defaults to empty tuple.
-        weights (str): Path to folder containing DeepFRI model weights.
+        weights (str, optional): Path to folder containing DeepFRI model weights.
+            Required unless ``skip_prediction`` is True.
         output_path (str): Path to directory for saving results.
         deepfri_processing_modes (List[str], optional): List of modes to predict.
-            Options: "ec", "bp", "mf", "cc".
+            Options: "ec", "bp", "mf", "cc", or "none" to skip prediction.
             Defaults to ["ec", "bp", "mf", "cc"].
         angstrom_contact_threshold (float, optional): Distance threshold for contact maps.
             Defaults to 6.
@@ -588,6 +653,13 @@ def predict_protein_function(
             Defaults to False.
         save_cmaps (bool, optional): Save generated contact maps to disk.
             Defaults to False.
+        carve_pdbs (bool, optional): Write query-aligned PDB files carved from
+            template structures using PyOpal alignment. Defaults to False.
+        compress_structures (bool, optional): Compress carved PDB files into a
+            FoldComp database after carving. Requires ``carve_pdbs``.
+            Defaults to False.
+        skip_prediction (bool, optional): Run alignment and carving only; skip
+            DeepFRI inference. Defaults to False.
         skip_matrix (bool, optional): Skip writing full prediction matrices.
             Defaults to False.
         scoring_matrix (str, optional): Scoring matrix for alignment.
@@ -617,12 +689,11 @@ def predict_protein_function(
         load_custom_alignments_from_mapping: For custom mapping implementation.
     """
 
-    # load DeepFRI model
-    deepfri_models_config = load_deepfri_config(weights)
-    deepfri_processing_modes = _initialize_processing_modes(
-        deepfri_processing_modes, deepfri_models_config)
+    skip_prediction = skip_prediction or "none" in deepfri_processing_modes
+    deepfri_processing_modes = [
+        mode for mode in deepfri_processing_modes if mode != "none"
+    ]
 
-    weights = pathlib.Path(weights)
     output_path = pathlib.Path(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -750,6 +821,23 @@ def predict_protein_function(
             cmap_file = cmap_dir / f"{aln.query_name}.npy"
             np.save(cmap_file, cmap)
 
+    if carve_pdbs:
+        carve_dir = output_path / "carved_pdbs"
+        carved_count = write_carved_pdbs(aligned_cmaps,
+                                         databases,
+                                         carve_dir,
+                                         threads=threads)
+        if compress_structures:
+            if carved_count == 0:
+                logger.warning(
+                    "No carved PDB files to compress; skipping FoldComp compression."
+                )
+            else:
+                compress_carved_structures(
+                    carve_dir,
+                    output_path / "carved_pdbs.foldcomp",
+                    threads=threads)
+
     aligned_queries = [aln[0].query_name for aln in aligned_cmaps]
     unaligned_queries = {
         query_id: seq
@@ -778,6 +866,25 @@ def predict_protein_function(
         for query_id in unaligned_queries:
             tsv_writer.writerow(
                 [query_id, False, np.nan, np.nan, np.nan, np.nan, np.nan])
+
+    if skip_prediction:
+        logger.info("Skipping DeepFRI prediction (--skip-prediction).")
+        if remove_intermediate:
+            for db in databases:
+                remove_intermediate_files([db.sequence_db, db.mmseqs_db])
+        logger.info("meta-DeepFRI finished successfully.")
+        return
+
+    if not weights:
+        raise ValueError(
+            "Model weights path is required unless --skip-prediction is set.")
+
+    # load DeepFRI model
+    deepfri_models_config = load_deepfri_config(weights)
+    deepfri_processing_modes = _initialize_processing_modes(
+        deepfri_processing_modes, deepfri_models_config)
+
+    weights = pathlib.Path(weights)
 
     ### FUNCTION PREDICTION ###
     # sort cmaps by length of query sequence

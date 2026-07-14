@@ -73,9 +73,9 @@ pip install mdeepfri
 
 The default install uses CPU ONNX Runtime and does not require CUDA.
 On Linux x86_64, GPU acceleration may still be used automatically when a
-compatible CUDA stack is already present on the system.
+compatible CUDA stack is already present on your machine.
 
-For an explicit, self-contained GPU install (Linux x86_64 only), use:
+For a self-contained GPU install, use:
 
 ```{code-block} bash
 pip install mdeepfri[gpu]
@@ -298,10 +298,49 @@ mDeepFRI predict-function -i /path/to/protein/sequences \
   -o /output_path --skip-matrix
 ```
 
-### 5. CPU / GPU utilization
+### 5. Carved PDB structures
+
+Use `--carve-pdbs` to write query-aligned PDB files under
+`{output_path}/carved_pdbs/{query_id}.pdb`. Each file is carved from the
+template structure selected by MMseqs2/PyOpal alignment (or from
+`--custom-mapping`):
+
+- **SEQRES** always reflects the full query sequence.
+- **ATOM** records are written only for query residues mapped to template
+  coordinates (query insertions appear in SEQRES only).
+- **Residue numbers** follow the query sequence (1-based).
+- **Residue names** follow the query, but atom types and coordinates are
+  transferred from the template. This can create a mismatch between residue
+  identity and atom geometry; see the `REMARK` records in each carved file.
+
+This is different from `--save-structures`, which saves the raw template
+structures used as alignment targets.
+
+Carving runs in parallel and respects `--threads`. Use
+`--compress-structures` to build a FoldComp database at
+`{output_path}/carved_pdbs.foldcomp` from the carved PDB directory
+(requires ``foldcomp_bin``; run ``python setup.py build_binaries --inplace``).
+
+To run alignment and carving only (no DeepFRI inference), use
+`--skip-prediction` or pass `-p none`. Weights are not required in that mode.
+
+```{code-block} bash
+mDeepFRI predict-function -i /path/to/protein/sequences \
+  --custom-mapping /path/to/mapping.tsv \
+  -o /output_path --carve-pdbs --skip-prediction --threads 8
+```
+
+```{code-block} bash
+mDeepFRI predict-function -i /path/to/protein/sequences \
+  -d /path/to/foldcomp/database/ -w /path/to/deepfri/weights/folder \
+  -o /output_path --carve-pdbs --compress-structures --threads 8
+```
+
+### 6. CPU / GPU utilization
 
 If argument `threads` is provided, the app will parallelize certain steps
-(alignment, contact map alignment, functional annotation). GPU is often used
+(alignment, contact map alignment, PDB carving, FoldComp compression, and
+functional annotation). GPU is often used
 to speed up neural networks. By default, `mDeepFRI` runs on CPU. During
 prediction it tries the CUDA execution provider first and falls back to CPU
 if CUDA is unavailable.
