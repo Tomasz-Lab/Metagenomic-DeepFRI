@@ -298,6 +298,19 @@ mDeepFRI predict-function -i /path/to/protein/sequences \
   -o /output_path --skip-matrix
 ```
 
+### 4b. Raw PyOpal alignments
+
+Use `--save-raw-alignments` to export each pairwise PyOpal alignment under
+`{output_path}/raw_alignments/{query_id}.fasta` in this format:
+
+```text
+>query_id|target=target_id|identity=0.8589|coverage=1.0000|score=2227
+QUERYSEQUENCE
+>target_id|query=query_id|identity=0.8589|coverage=1.0000|score=2227
+TARGETSEQUENCE
+#alignment_string: MMXMMMM...
+```
+
 ### 5. Carved PDB structures
 
 Use `--carve-pdbs` to write query-aligned PDB files under

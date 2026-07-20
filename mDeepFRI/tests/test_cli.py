@@ -57,6 +57,7 @@ class TestCLI(unittest.TestCase):
         self.assertIn("--pippack-n-recycle", result.output)
         self.assertIn("--pippack-temperature", result.output)
         self.assertIn("--pippack-use-resample", result.output)
+        self.assertIn("--save-raw-alignments", result.output)
         self.assertIn("none", result.output)
 
     def test_carve_pdbs_requires_pippack_dir(self):

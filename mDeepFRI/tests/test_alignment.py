@@ -26,12 +26,13 @@ class TestAlignment(unittest.TestCase):
         self.assertEqual(best_hit, "seq3")
 
     def test_align_pairwise(self):
-        alignment, iden, query_coverage, target_coverage = align_pairwise(
+        alignment, iden, query_coverage, target_coverage, score = align_pairwise(
             self.queries["query_seq"], self.targets["seq3"])
         self.assertEqual(alignment,
                          "MMMMMMMMMXMMMMMMMMMMMMMMMMMMMMMMXMMMMMMMMMMX")
         self.assertAlmostEqual(iden, 0.93, places=2)
         self.assertAlmostEqual(query_coverage, 1.0, places=2)
+        self.assertGreater(score, 0)
 
 
 class TestInsertGaps(unittest.TestCase):

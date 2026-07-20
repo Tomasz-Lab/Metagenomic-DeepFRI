@@ -35,7 +35,7 @@ from tqdm import tqdm
 
 from mDeepFRI import DEEPFRI_MODES
 from mDeepFRI.alignment import (AlignmentResult, align_mmseqs_results,
-                                align_pairwise)
+                                align_pairwise, write_raw_alignments)
 from mDeepFRI.bio_utils import (build_align_contact_map,
                                 compress_carved_structures,
                                 extract_residue_sequence,
@@ -465,7 +465,7 @@ def _align_one_custom_mapping(
             return query_id, None, (
                 f"failed to extract structure information from {structure_path}")
 
-        alignment_string, identity, query_coverage, target_coverage = align_pairwise(
+        alignment_string, identity, query_coverage, target_coverage, score = align_pairwise(
             query_sequence,
             target_sequence,
             gap_open=alignment_gap_open,
@@ -483,7 +483,8 @@ def _align_one_custom_mapping(
             target_coverage=target_coverage,
             db_name="custom_mapping",
             coords=coords,
-            structure_path=structure_path)
+            structure_path=structure_path,
+            score=score)
 
         if build_contact_maps:
             aligned_cmap = build_align_contact_map(
@@ -722,6 +723,7 @@ def predict_protein_function(
         threads: int = 1,
         save_structures: bool = False,
         save_cmaps: bool = False,
+        save_raw_alignments: bool = False,
         carve_pdbs: bool = False,
         compress_structures: bool = False,
         pippack_dir: Optional[str] = None,
@@ -779,6 +781,8 @@ def predict_protein_function(
             Defaults to False.
         save_cmaps (bool, optional): Save generated contact maps to disk.
             Defaults to False.
+        save_raw_alignments (bool, optional): Write PyOpal alignments as FASTA
+            files under ``raw_alignments/``. Defaults to False.
         carve_pdbs (bool, optional): Write query-aligned backbone PDBs carved from
             template structures, then rebuild side chains with PIPPack.
             Defaults to False.
@@ -999,6 +1003,15 @@ def predict_protein_function(
         for i, (aln, cmap) in enumerate(aligned_cmaps):
             cmap_file = cmap_dir / f"{aln.query_name}.npy"
             np.save(cmap_file, cmap)
+
+    if save_raw_alignments:
+        raw_dir = output_path / "raw_alignments"
+        logger.info("=" * 60)
+        logger.info("STEP: Save raw PyOpal alignments → %s", raw_dir)
+        logger.info("=" * 60)
+        written = write_raw_alignments(
+            [aln for aln, _ in aligned_cmaps], raw_dir)
+        logger.info("STEP DONE: Wrote %d raw alignment FASTA file(s).", written)
 
     aligned_queries = [aln.query_name for aln, _ in aligned_cmaps]
     unaligned_queries = {

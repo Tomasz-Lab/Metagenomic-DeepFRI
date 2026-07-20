@@ -115,7 +115,8 @@ class AlignmentResult:
                  db_name: Optional[str] = None,
                  coords: Optional[np.ndarray] = None,
                  structure_path: Optional[str] = None,
-                 structure_string: Optional[str] = None):
+                 structure_string: Optional[str] = None,
+                 score: Optional[float] = None):
 
         self.query_name = query_name
         self.query_sequence = query_sequence
@@ -130,6 +131,7 @@ class AlignmentResult:
         self.coords = coords
         self.structure_path = structure_path
         self.structure_string = structure_string
+        self.score = score
         self.target_coords = None
         self.cmap = None
         self.aligned_cmap = None
@@ -152,6 +154,60 @@ class AlignmentResult:
 
         self.gapped_sequence, self.gapped_target = insert_gaps(
             self.query_sequence, self.target_sequence, self.alignment)
+
+
+def format_raw_alignment_fasta(alignment: AlignmentResult) -> str:
+    """
+    Format a PyOpal alignment as a two-record FASTA plus alignment string.
+
+    Output layout::
+
+        >query|target=...|identity=...|coverage=...|score=...
+        QUERYSEQ
+        >target|query=...|identity=...|coverage=...|score=...
+        TARGETSEQ
+        #alignment_string: MMX...
+    """
+    identity = float(alignment.query_identity or 0.0)
+    coverage = float(alignment.query_coverage or 0.0)
+    score = alignment.score
+    if score is None:
+        score_str = "nan"
+    else:
+        score_str = str(int(round(float(score))))
+
+    query_header = (
+        f">{alignment.query_name}|target={alignment.target_name}"
+        f"|identity={identity:.4f}|coverage={coverage:.4f}|score={score_str}")
+    target_header = (
+        f">{alignment.target_name}|query={alignment.query_name}"
+        f"|identity={identity:.4f}|coverage={coverage:.4f}|score={score_str}")
+    return (
+        f"{query_header}\n{alignment.query_sequence}\n"
+        f"{target_header}\n{alignment.target_sequence}\n"
+        f"#alignment_string: {alignment.alignment}\n")
+
+
+def write_raw_alignments(
+        alignments: list[AlignmentResult],
+        output_dir,
+) -> int:
+    """
+    Write one raw-alignment FASTA file per query under ``output_dir``.
+
+    Returns:
+        Number of files written.
+    """
+    from pathlib import Path
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    written = 0
+    for alignment in alignments:
+        path = out / f"{alignment.query_name}.fasta"
+        path.write_text(format_raw_alignment_fasta(alignment), encoding="utf-8")
+        written += 1
+    return written
 
 
 def _uppercase_sequence(seq: str) -> str:
@@ -220,8 +276,9 @@ def align_pairwise(query,
     identity = alignment[0].identity()
     query_coverage = alignment[0].coverage(reference="query")
     target_coverage = alignment[0].coverage(reference="target")
+    score = float(alignment[0].score)
 
-    return alignment_string, identity, query_coverage, target_coverage
+    return alignment_string, identity, query_coverage, target_coverage, score
 
 
 def pairwise_against_database(query_id,
@@ -240,7 +297,7 @@ def pairwise_against_database(query_id,
                                               scoring_matrix)
 
     # align the query against the best hit
-    alignment, identity, query_coverage, target_coverage = align_pairwise(
+    alignment, identity, query_coverage, target_coverage, score = align_pairwise(
         query_sequence, best_target, gap_open, gap_extend, scoring_matrix)
     # create an alignment object
     alignment_result = AlignmentResult(query_id,
@@ -250,7 +307,8 @@ def pairwise_against_database(query_id,
                                        alignment,
                                        identity,
                                        query_coverage=query_coverage,
-                                       target_coverage=target_coverage)
+                                       target_coverage=target_coverage,
+                                       score=score)
     return alignment_result
 
 
