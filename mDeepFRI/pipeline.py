@@ -25,6 +25,7 @@ import multiprocessing
 import pathlib
 import pickle
 import sys
+import time
 from concurrent.futures import ProcessPoolExecutor
 from functools import partial
 from typing import Any, Dict, Iterable, List, Optional, Tuple
@@ -43,6 +44,7 @@ from mDeepFRI.bio_utils import (build_align_contact_map,
 from mDeepFRI.database import Database, build_database
 from mDeepFRI.mmseqs import MMseqsResult, QueryFile
 from mDeepFRI.pdb import create_pdb_mmseqs, extract_calpha_coords
+from mDeepFRI.pippack import pack_carved_structures
 from mDeepFRI.predict import Predictor
 from mDeepFRI.utils import (get_json_values, load_deepfri_config,
                             remove_intermediate_files)
@@ -307,6 +309,37 @@ def hierarchical_database_search(query_file: QueryFile,
             query_file.remove_sequences(all_hits)
 
     return dbs
+
+
+def _format_duration(seconds: float) -> str:
+    """Format elapsed seconds as H:MM:SS or M:SS."""
+    total = max(0, int(round(seconds)))
+    hours, rem = divmod(total, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
+
+
+def _log_step_timing_summary(step_timings: List[Tuple[str, float]],
+                             total_seconds: float) -> None:
+    """Print a compact timing table for completed pipeline steps."""
+    if not step_timings:
+        return
+    name_width = max(len(name) for name, _ in step_timings)
+    name_width = max(name_width, len("Step"))
+    logger.info("=" * 60)
+    logger.info("Pipeline timing summary")
+    logger.info("-" * 60)
+    logger.info(f"{'Step':<{name_width}}  {'Duration':>10}  {'Share':>7}")
+    logger.info("-" * 60)
+    for name, elapsed in step_timings:
+        share = (elapsed / total_seconds * 100.0) if total_seconds > 0 else 0.0
+        logger.info(f"{name:<{name_width}}  {_format_duration(elapsed):>10}  "
+                    f"{share:6.1f}%")
+    logger.info("-" * 60)
+    logger.info(f"{'Total':<{name_width}}  {_format_duration(total_seconds):>10}")
+    logger.info("=" * 60)
 
 
 def _log_cnn_fallback(query_id: str, reason: str) -> None:
@@ -691,6 +724,15 @@ def predict_protein_function(
         save_cmaps: bool = False,
         carve_pdbs: bool = False,
         compress_structures: bool = False,
+        pippack_dir: Optional[str] = None,
+        pippack_python: Optional[str] = None,
+        pippack_device: str = "cpu",
+        pippack_workers: Optional[int] = None,
+        pippack_model: str = "pippack_model_1",
+        pippack_n_recycle: int = 3,
+        pippack_temperature: float = 0.0,
+        pippack_use_resample: bool = False,
+        pippack_seed: int = 42,
         skip_prediction: bool = False,
         skip_matrix: bool = False,
         scoring_matrix: str = "VTML80",
@@ -737,11 +779,29 @@ def predict_protein_function(
             Defaults to False.
         save_cmaps (bool, optional): Save generated contact maps to disk.
             Defaults to False.
-        carve_pdbs (bool, optional): Write query-aligned PDB files carved from
-            template structures using PyOpal alignment. Defaults to False.
+        carve_pdbs (bool, optional): Write query-aligned backbone PDBs carved from
+            template structures, then rebuild side chains with PIPPack.
+            Defaults to False.
         compress_structures (bool, optional): Compress carved PDB files into a
             FoldComp database after carving. Requires ``carve_pdbs``.
             Defaults to False.
+        pippack_dir (str, optional): Path to a PIPPack checkout (or set
+            ``PIPPACK_DIR``). Required when ``carve_pdbs`` is True.
+        pippack_python (str, optional): Python interpreter for the PIPPack env.
+        pippack_device (str, optional): ``"cpu"`` or ``"gpu"`` for packing.
+            Defaults to ``"cpu"``.
+        pippack_workers (int, optional): Number of single-threaded PIPPack
+            worker processes. Defaults to ``threads`` on CPU and 1 on GPU.
+        pippack_model (str, optional): PIPPack checkpoint name.
+            Defaults to ``"pippack_model_1"``.
+        pippack_n_recycle (int, optional): PIPPack recycling iterations.
+            Defaults to 3.
+        pippack_temperature (float, optional): PIPPack sampling temperature.
+            Defaults to 0.0 (deterministic).
+        pippack_use_resample (bool, optional): Enable PIPPack clash/proline
+            resampling after packing. Defaults to False.
+        pippack_seed (int, optional): RNG seed for PIPPack workers.
+            Defaults to 42.
         skip_prediction (bool, optional): Run alignment and carving only; skip
             DeepFRI inference. Defaults to False.
         skip_matrix (bool, optional): Skip writing full prediction matrices.
@@ -781,13 +841,20 @@ def predict_protein_function(
     output_path = pathlib.Path(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
 
+    pipeline_t0 = time.perf_counter()
+    step_timings: List[Tuple[str, float]] = []
+
     aligned_cmaps = []
 
     # Use custom mapping if provided, otherwise use hierarchical database search
     if custom_mapping_file:
+        logger.info("=" * 60)
+        logger.info("STEP: Custom mapping alignment")
+        logger.info("=" * 60)
         logger.info(
             f"Using custom sequence-to-structure mapping from {custom_mapping_file}"
         )
+        step_t0 = time.perf_counter()
         aligned_cmaps = load_custom_alignments_from_mapping(
             mapping_file=custom_mapping_file,
             query_file=query_file,
@@ -798,7 +865,14 @@ def predict_protein_function(
             generate_contacts=generate_contacts,
             threads=threads,
             build_contact_maps=not skip_prediction)
+        step_timings.append(
+            ("Custom mapping alignment", time.perf_counter() - step_t0))
+        logger.info("STEP DONE: Custom mapping alignment finished.")
     else:
+        logger.info("=" * 60)
+        logger.info("STEP: Hierarchical database search + contact-map alignment")
+        logger.info("=" * 60)
+        step_t0 = time.perf_counter()
         # Standard hierarchical database search
         for db in databases:
             # SEQUENCE ALIGNMENT
@@ -915,6 +989,9 @@ def predict_protein_function(
             logger.info(
                 f"Aligned {len(aligned_cmaps)}/{len(query_file.sequences)} ({aligned_total}%) "
                 "proteins in total [without length invalid].")
+        step_timings.append(
+            ("Database search + contact maps", time.perf_counter() - step_t0))
+        logger.info("STEP DONE: Hierarchical database search finished.")
 
     if save_cmaps:
         cmap_dir = output_path / "contact_maps"
@@ -938,6 +1015,7 @@ def predict_protein_function(
         )
 
     alignment_results_file = output_path / "alignment_summary.tsv"
+    logger.info("Writing alignment summary to %s.", alignment_results_file)
     with open(alignment_results_file, "w", encoding="utf-8") as aln_output:
         tsv_writer = csv.writer(aln_output, delimiter="\t")
         tsv_writer.writerow(ALIGNMENT_HEADER)
@@ -949,30 +1027,88 @@ def predict_protein_function(
         for query_id in unaligned_queries:
             tsv_writer.writerow(
                 [query_id, False, np.nan, np.nan, np.nan, np.nan, np.nan])
+    logger.info("Alignment summary written (%d aligned, %d unaligned).",
+                len(aligned_cmaps), len(unaligned_queries))
 
     if carve_pdbs:
         carve_dir = output_path / "carved_pdbs"
+        logger.info("=" * 60)
+        logger.info("STEP: Carve backbone PDBs (N/CA/C/O) → %s", carve_dir)
+        logger.info("=" * 60)
+        step_t0 = time.perf_counter()
         carved_count = write_carved_pdbs(aligned_cmaps,
                                          databases,
                                          carve_dir,
                                          threads=threads,
                                          release_contact_maps=skip_prediction)
+        step_timings.append(("Carve backbone PDBs",
+                             time.perf_counter() - step_t0))
+        logger.info("STEP DONE: Carving finished (%d PDB file(s)).",
+                    carved_count)
+
+        if carved_count > 0:
+            logger.info("=" * 60)
+            logger.info(
+                "STEP: PIPPack side-chain packing (%s, model=%s)",
+                pippack_device,
+                pippack_model,
+            )
+            logger.info("=" * 60)
+            step_t0 = time.perf_counter()
+            packed_count, skipped_count = pack_carved_structures(
+                carve_dir,
+                pippack_dir=pippack_dir,
+                pippack_python=pippack_python,
+                device=pippack_device,
+                threads=threads,
+                pippack_workers=pippack_workers,
+                model_name=pippack_model,
+                n_recycle=pippack_n_recycle,
+                temperature=pippack_temperature,
+                use_resample=pippack_use_resample,
+                seed=pippack_seed,
+            )
+            step_timings.append(("PIPPack side-chain packing",
+                                 time.perf_counter() - step_t0))
+            logger.info(
+                "STEP DONE: PIPPack packing finished "
+                "(packed=%d, skipped_incomplete=%d).",
+                packed_count,
+                skipped_count,
+            )
+
         if compress_structures:
             if carved_count == 0:
                 logger.warning(
                     "No carved PDB files to compress; skipping FoldComp compression."
                 )
             else:
+                foldcomp_out = output_path / "carved_pdbs.foldcomp"
+                logger.info("=" * 60)
+                logger.info(
+                    "STEP: FoldComp compression → %s (this may take a while)",
+                    foldcomp_out,
+                )
+                logger.info("=" * 60)
+                step_t0 = time.perf_counter()
                 compress_carved_structures(
                     carve_dir,
-                    output_path / "carved_pdbs.foldcomp",
+                    foldcomp_out,
                     threads=threads)
+                step_timings.append(("FoldComp compression",
+                                     time.perf_counter() - step_t0))
+                logger.info("STEP DONE: FoldComp compression finished.")
 
     if skip_prediction:
+        logger.info("=" * 60)
+        logger.info("STEP: Skip DeepFRI prediction (--skip-prediction)")
+        logger.info("=" * 60)
         logger.info("Skipping DeepFRI prediction (--skip-prediction).")
         if remove_intermediate:
             for db in databases:
                 remove_intermediate_files([db.sequence_db, db.mmseqs_db])
+        _log_step_timing_summary(step_timings,
+                                 time.perf_counter() - pipeline_t0)
         logger.info("meta-DeepFRI finished successfully.")
         return
 
@@ -981,6 +1117,10 @@ def predict_protein_function(
             "Model weights path is required unless --skip-prediction is set.")
 
     # load DeepFRI model
+    logger.info("=" * 60)
+    logger.info("STEP: DeepFRI function prediction")
+    logger.info("=" * 60)
+    step_t0 = time.perf_counter()
     deepfri_models_config = load_deepfri_config(weights)
     deepfri_processing_modes = _initialize_processing_modes(
         deepfri_processing_modes, deepfri_models_config)
@@ -1256,4 +1396,7 @@ def predict_protein_function(
         for db in databases:
             remove_intermediate_files([db.sequence_db, db.mmseqs_db])
 
+    step_timings.append(
+        ("DeepFRI function prediction", time.perf_counter() - step_t0))
+    _log_step_timing_summary(step_timings, time.perf_counter() - pipeline_t0)
     logger.info("meta-DeepFRI finished successfully.")

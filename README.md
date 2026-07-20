@@ -309,18 +309,53 @@ template structure selected by MMseqs2/PyOpal alignment (or from
 - **ATOM** records are written only for query residues mapped to template
   coordinates (query insertions appear in SEQRES only).
 - **Residue numbers** follow the query sequence (1-based).
-- **Residue names** follow the query, but atom types and coordinates are
-  transferred from the template. This can create a mismatch between residue
-  identity and atom geometry; see the `REMARK` records in each carved file.
+- **Backbone only:** N, CA, C, and O coordinates are transferred from the
+  template. Residue names follow the query sequence.
+- **Side chains** are rebuilt with [PIPPack](https://github.com/Kuhlman-Lab/PIPPack)
+  after carving. Packing is always part of `--carve-pdbs`.
+- Templates with CA-only / incomplete backbone residues are **not packed**;
+  a warning is logged and the backbone-only PDB is kept.
 
 This is different from `--save-structures`, which saves the raw template
 structures used as alignment targets.
 
-Carving runs in parallel and respects `--threads`. Use
-`--compress-structures` to build a FoldComp database at
-`{output_path}/carved_pdbs.foldcomp` from the carved PDB directory
-(requires ``foldcomp_bin``; run ``python setup.py build_binaries --inplace``).
-Individual carved PDB files are deleted after compression succeeds.
+#### PIPPack setup (required for `--carve-pdbs`)
+
+PIPPack is an external dependency (not installed into the mDeepFRI env):
+
+1. Clone PIPPack and create its conda env from `env/pippack_env.yaml`.
+2. Ensure `model_weights/` is present in the checkout.
+3. Pass `--pippack-dir /path/to/PIPPack` or set `PIPPACK_DIR`.
+4. Pass `--pippack-python /path/to/pippack/env/bin/python` (or set
+   `PIPPACK_PYTHON`). Without this, workers may pick the mDeepFRI/pixi
+   interpreter, which does **not** have PyTorch and packing will fail.
+
+Packing runs many **single-threaded** worker processes (best CPU throughput
+in our benchmarks):
+
+- `--pippack-device cpu` (default): worker count defaults to `--threads`
+- `--pippack-device gpu`: worker count defaults to 1 (override with
+  `--pippack-workers`)
+- `--pippack-model` selects the checkpoint (default `pippack_model_1`)
+
+Inference knobs (PIPPack defaults; safe to leave unchanged):
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `--pippack-n-recycle` | `3` | Recycling iterations |
+| `--pippack-temperature` | `0.0` | Chi sampling temperature (`0` = argmax) |
+| `--pippack-use-resample` | off | Post-hoc clash/proline steric adjustment |
+| `--pippack-seed` | `42` | RNG seed for packing workers |
+
+**Note:** post-hoc steric clash adjustment (`--pippack-use-resample`) is **not**
+enabled by default. It can improve packing quality but is slower; enable it
+explicitly when you want PIPPack's resampling pass.
+
+Carving itself also respects `--threads`. Use `--compress-structures` to
+build a FoldComp database at `{output_path}/carved_pdbs.foldcomp` from the
+carved/packed PDB directory (requires ``foldcomp_bin``; run
+``python setup.py build_binaries --inplace``). Individual PDB files are
+deleted after compression succeeds.
 
 To run alignment and carving only (no DeepFRI inference), use
 `--skip-prediction` or pass `-p none`. Weights are not required in that mode.
@@ -328,23 +363,33 @@ To run alignment and carving only (no DeepFRI inference), use
 ```{code-block} bash
 mDeepFRI predict-function -i /path/to/protein/sequences \
   --custom-mapping /path/to/mapping.tsv \
-  -o /output_path --carve-pdbs --skip-prediction --threads 8
+  -o /output_path --carve-pdbs --skip-prediction --threads 8 \
+  --pippack-dir /path/to/PIPPack \
+  --pippack-python /path/to/pippack/env/bin/python
 ```
 
 ```{code-block} bash
 mDeepFRI predict-function -i /path/to/protein/sequences \
   -d /path/to/foldcomp/database/ -w /path/to/deepfri/weights/folder \
-  -o /output_path --carve-pdbs --compress-structures --threads 8
+  -o /output_path --carve-pdbs --compress-structures --threads 8 \
+  --pippack-dir /path/to/PIPPack --pippack-device gpu
 ```
+
+#### GPU packing tip
+
+For large batches on GPU, start with `--pippack-device gpu --pippack-workers 1`.
+On multi-GPU hosts you can raise `--pippack-workers` and assign devices via
+`CUDA_VISIBLE_DEVICES` outside mDeepFRI.
 
 ### 6. CPU / GPU utilization
 
 If argument `threads` is provided, the app will parallelize certain steps
-(alignment, contact map alignment, PDB carving, FoldComp compression, and
-functional annotation). GPU is often used
+(alignment, contact map alignment, PDB carving, PIPPack side-chain packing on
+CPU, FoldComp compression, and functional annotation). GPU is often used
 to speed up neural networks. By default, `mDeepFRI` runs on CPU. During
 prediction it tries the CUDA execution provider first and falls back to CPU
-if CUDA is unavailable.
+if CUDA is unavailable. PIPPack packing can use `--pippack-device gpu`
+independently of DeepFRI prediction.
 
 **Technical tip:** Single instance of DeepFRI on GPU requires 2GB VRAM.
 

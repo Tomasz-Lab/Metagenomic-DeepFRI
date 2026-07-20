@@ -409,7 +409,8 @@ def search_databases(ctx, input, output, db_path, mmseqs_sensitivity,
     default=False,
     type=bool,
     is_flag=True,
-    help="Write query-aligned PDB files carved from template structures "
+    help="Write query-aligned backbone PDBs (N/CA/C/O) carved from template "
+    "structures and rebuild side chains with PIPPack "
     "(unlike --save-structures, which saves raw template files).",
 )
 @click.option(
@@ -418,6 +419,71 @@ def search_databases(ctx, input, output, db_path, mmseqs_sensitivity,
     type=bool,
     is_flag=True,
     help="Compress carved PDB files into a FoldComp database (requires --carve-pdbs).",
+)
+@click.option(
+    "--pippack-dir",
+    default=None,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Path to a PIPPack checkout (or set PIPPACK_DIR). Required with --carve-pdbs.",
+)
+@click.option(
+    "--pippack-python",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Python interpreter for the PIPPack environment "
+    "(required in practice; or set PIPPACK_PYTHON). "
+    "Must be able to import torch.",
+)
+@click.option(
+    "--pippack-device",
+    default="cpu",
+    type=click.Choice(["cpu", "gpu"], case_sensitive=False),
+    show_default=True,
+    help="Device for PIPPack side-chain packing.",
+)
+@click.option(
+    "--pippack-workers",
+    default=None,
+    type=int,
+    help="Number of single-threaded PIPPack worker processes. "
+    "Defaults to --threads on CPU and 1 on GPU.",
+)
+@click.option(
+    "--pippack-model",
+    default="pippack_model_1",
+    type=str,
+    show_default=True,
+    help="PIPPack checkpoint name under model_weights/ "
+    "(e.g. pippack_model_1, pippack_model_2, pippack_model_3).",
+)
+@click.option(
+    "--pippack-n-recycle",
+    default=3,
+    type=int,
+    show_default=True,
+    help="PIPPack recycling iterations during side-chain packing.",
+)
+@click.option(
+    "--pippack-temperature",
+    default=0.0,
+    type=float,
+    show_default=True,
+    help="PIPPack chi-angle sampling temperature (0.0 = argmax / deterministic).",
+)
+@click.option(
+    "--pippack-use-resample",
+    default=False,
+    type=bool,
+    is_flag=True,
+    help="Enable PIPPack post-packing clash/proline resampling "
+    "(off by default; slower).",
+)
+@click.option(
+    "--pippack-seed",
+    default=42,
+    type=int,
+    show_default=True,
+    help="Random seed for PIPPack packing workers.",
 )
 @click.option(
     "--skip-prediction",
@@ -473,8 +539,11 @@ def predict_function(ctx, input, db_path, weights, output, processing_modes,
                      alignment_gap_extend, remove_intermediate, overwrite,
                      threads, skip_pdb, min_length, max_length, tmpdir,
                      save_structures, save_cmaps, carve_pdbs, compress_structures,
-                     skip_prediction, skip_matrix, scoring_matrix,
-                     custom_mapping, propagate_go_terms, obo_path):
+                     pippack_dir, pippack_python, pippack_device, pippack_workers,
+                     pippack_model, pippack_n_recycle, pippack_temperature,
+                     pippack_use_resample, pippack_seed, skip_prediction,
+                     skip_matrix, scoring_matrix, custom_mapping,
+                     propagate_go_terms, obo_path):
     """Predict protein function from sequence."""
 
     logger.info("Starting Metagenomic-DeepFRI.")
@@ -483,6 +552,13 @@ def predict_function(ctx, input, db_path, weights, output, processing_modes,
     if compress_structures and not carve_pdbs:
         raise click.UsageError(
             "--compress-structures requires --carve-pdbs.")
+    if carve_pdbs:
+        from mDeepFRI.pippack import PippackConfigError, resolve_pippack_dir
+        try:
+            resolve_pippack_dir(
+                str(pippack_dir) if pippack_dir is not None else None)
+        except PippackConfigError as exc:
+            raise click.UsageError(str(exc)) from exc
     if not skip_prediction and weights is None:
         raise click.UsageError(
             "Provide --weights or use --skip-prediction / -p none.")
@@ -548,6 +624,16 @@ def predict_function(ctx, input, db_path, weights, output, processing_modes,
         save_cmaps=save_cmaps,
         carve_pdbs=carve_pdbs,
         compress_structures=compress_structures,
+        pippack_dir=str(pippack_dir) if pippack_dir is not None else None,
+        pippack_python=str(pippack_python)
+        if pippack_python is not None else None,
+        pippack_device=pippack_device.lower(),
+        pippack_workers=pippack_workers,
+        pippack_model=pippack_model,
+        pippack_n_recycle=pippack_n_recycle,
+        pippack_temperature=pippack_temperature,
+        pippack_use_resample=pippack_use_resample,
+        pippack_seed=pippack_seed,
         skip_prediction=skip_prediction,
         skip_matrix=skip_matrix,
         scoring_matrix=scoring_matrix,

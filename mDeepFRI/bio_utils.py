@@ -43,6 +43,14 @@ from mDeepFRI.contact_map_utils import align_contact_map, pairwise_sqeuclidean
 from mDeepFRI.mmseqs import FOLDCOMP_PATH
 
 logger = logging.getLogger(__name__)
+handler = logging.StreamHandler(sys.stdout)
+logger.propagate = False
+formatter = logging.Formatter(
+    '[%(asctime)s] %(module)s.%(funcName)s %(levelname)s: %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
 
 
 def _pin_blas_threads_per_process() -> None:
@@ -59,13 +67,7 @@ def _pin_blas_threads_per_process() -> None:
 
 def _init_parallel_worker() -> None:
     _pin_blas_threads_per_process()
-handler = logging.StreamHandler(sys.stdout)
-formatter = logging.Formatter(
-    '[%(asctime)s] %(module)s.%(funcName)s %(levelname)s: %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S')
-handler.setFormatter(formatter)
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
+
 
 # https://github.com/openmm/pdbfixer/blob/master/pdbfixer/pdbfixer.py
 substitutions = {
@@ -398,6 +400,9 @@ def _format_seqres_records(query_sequence: str, chain: str = "A") -> list[str]:
     return lines
 
 
+BACKBONE_ATOM_NAMES = ("N", "CA", "C", "O")
+
+
 def _format_carved_pdb_header(alignment: AlignmentResult,
                               chain: str = "A") -> list[str]:
     template_id = alignment.target_name
@@ -407,13 +412,31 @@ def _format_carved_pdb_header(alignment: AlignmentResult,
         f"REMARK   1 TEMPLATE STRUCTURE: {template_id}",
         f"REMARK   1 QUERY SEQUENCE: {query_id}",
         "REMARK   1 ALIGNMENT METHOD: PYOPAL GLOBAL NEEDLEMAN-WUNSCH",
-        "REMARK   1 RESIDUE NAMES FOLLOW THE QUERY SEQUENCE; ATOM",
-        "REMARK   1 COORDINATES AND ATOM TYPES ARE TRANSFERRED FROM THE",
-        "REMARK   1 TEMPLATE. RESIDUE IDENTITY MAY NOT MATCH ATOM GEOMETRY.",
+        "REMARK   1 BACKBONE ATOMS (N, CA, C, O) ARE TRANSFERRED FROM THE",
+        "REMARK   1 TEMPLATE. SIDE CHAINS ARE REBUILT WITH PIPPACK.",
+        "REMARK   1 RESIDUE NAMES AND NUMBERING FOLLOW THE QUERY SEQUENCE.",
         "REMARK   1 QUERY INSERTIONS (GAPS IN TEMPLATE ALIGNMENT) APPEAR IN",
         "REMARK   1 SEQRES ONLY AND HAVE NO ATOM COORDINATES.",
     ]
     return remarks + _format_seqres_records(alignment.query_sequence, chain)
+
+
+def _extract_backbone_atoms(residue_atoms: np.ndarray,
+                            query_idx: int) -> np.ndarray:
+    """Keep only N/CA/C/O atoms from a residue group."""
+    backbone_mask = np.isin(residue_atoms.atom_name, list(BACKBONE_ATOM_NAMES))
+    backbone_atoms = residue_atoms[backbone_mask]
+    present = set(backbone_atoms.atom_name.tolist())
+    missing = [name for name in BACKBONE_ATOM_NAMES if name not in present]
+    if missing:
+        raise ValueError(
+            f"Template residue mapped to query position {query_idx + 1} is "
+            f"missing backbone atom(s): {', '.join(missing)}.")
+    # Preserve canonical backbone order N, CA, C, O.
+    ordered = []
+    for atom_name in BACKBONE_ATOM_NAMES:
+        ordered.append(backbone_atoms[backbone_atoms.atom_name == atom_name])
+    return concatenate(ordered)
 
 
 def carve_aligned_pdb(alignment: AlignmentResult,
@@ -423,11 +446,12 @@ def carve_aligned_pdb(alignment: AlignmentResult,
                       output_chain: str = "A",
                       structure: Optional[np.ndarray] = None) -> str:
     """
-    Carve a query-aligned PDB from a template structure and PyOpal alignment.
+    Carve a query-aligned backbone PDB from a template and PyOpal alignment.
 
-    Coordinates are transferred from mapped template residues. Residue names
-    and numbering follow the query sequence (1-based). Query insertions aligned
-    to template gaps are included in SEQRES only.
+    Only backbone atoms (N, CA, C, O) are transferred from mapped template
+    residues. Residue names and numbering follow the query sequence (1-based).
+    Query insertions aligned to template gaps are included in SEQRES only.
+    Side chains are expected to be rebuilt by PIPPack after carving.
 
     Args:
         alignment: Pairwise alignment with gapped sequences.
@@ -455,7 +479,8 @@ def carve_aligned_pdb(alignment: AlignmentResult,
         if query_idx < 0:
             continue
 
-        residue_atoms = residue_groups[target_idx].copy()
+        residue_atoms = _extract_backbone_atoms(
+            residue_groups[target_idx].copy(), query_idx)
         three_letter = _query_residue_to_three_letter(
             alignment.query_sequence[query_idx])
         residue_atoms.res_name[:] = three_letter
@@ -477,6 +502,83 @@ def carve_aligned_pdb(alignment: AlignmentResult,
         atom_section = atom_buffer.getvalue()
 
     return "\n".join(header_lines) + "\n" + atom_section
+
+
+class BackboneValidationResult(NamedTuple):
+    ok: bool
+    residue_count: int
+    incomplete_residues: List[Tuple[int, Tuple[str, ...]]]
+
+    @property
+    def status(self) -> str:
+        return "ok" if self.ok else "ca_only_or_incomplete"
+
+
+def validate_backbone_pdb(
+        pdb_source: str | pathlib.Path) -> BackboneValidationResult:
+    """
+    Check that every non-hetero residue has complete backbone atoms N/CA/C/O.
+
+    Args:
+        pdb_source: Path to a PDB file or PDB contents as a string.
+
+    Returns:
+        :class:`BackboneValidationResult` with incomplete residue details.
+    """
+    if isinstance(pdb_source, pathlib.Path):
+        pdb_text = pdb_source.read_text(encoding="utf-8")
+    elif isinstance(pdb_source, str) and "\n" not in pdb_source and pathlib.Path(
+            pdb_source).is_file():
+        pdb_text = pathlib.Path(pdb_source).read_text(encoding="utf-8")
+    else:
+        pdb_text = str(pdb_source)
+
+    structure = load_structure(pdb_text, filetype="pdb")
+    protein = structure[structure.hetero == False]  # noqa
+    if len(protein) == 0:
+        return BackboneValidationResult(ok=False,
+                                        residue_count=0,
+                                        incomplete_residues=[])
+
+    res_ids = sorted(set(protein.res_id.tolist()))
+    incomplete: List[Tuple[int, Tuple[str, ...]]] = []
+    for res_id in res_ids:
+        residue = protein[protein.res_id == res_id]
+        present = set(residue.atom_name.tolist())
+        missing = tuple(name for name in BACKBONE_ATOM_NAMES
+                        if name not in present)
+        if missing:
+            incomplete.append((int(res_id), missing))
+
+    return BackboneValidationResult(ok=len(incomplete) == 0,
+                                    residue_count=len(res_ids),
+                                    incomplete_residues=incomplete)
+
+
+def extract_pdb_header(pdb_text: str) -> str:
+    """Return non-ATOM/HETATM header lines (REMARK, SEQRES, etc.)."""
+    header_lines = []
+    for line in pdb_text.splitlines():
+        if line.startswith(("ATOM", "HETATM", "TER", "END", "MODEL",
+                            "ENDMDL", "CONECT")):
+            break
+        header_lines.append(line)
+    return "\n".join(header_lines)
+
+
+def reattach_pdb_header(header: str, packed_pdb_text: str) -> str:
+    """Prepend a saved REMARK/SEQRES header onto a packed ATOM section."""
+    atom_lines = [
+        line for line in packed_pdb_text.splitlines()
+        if line.startswith(("ATOM", "HETATM", "TER", "END", "MODEL", "ENDMDL"))
+        or line.strip() == ""
+    ]
+    parts = []
+    if header.strip():
+        parts.append(header.rstrip("\n"))
+    if atom_lines:
+        parts.append("\n".join(atom_lines).strip("\n"))
+    return "\n".join(parts) + "\n"
 
 
 def resolve_template_structure(
@@ -827,12 +929,8 @@ def write_carved_pdbs(
                                  mp_context=ctx,
                                  initializer=_init_parallel_worker) as executor:
             if job_shards:
-                for shard_index, shard_results in enumerate(
-                        executor.map(_carve_job_shard, job_shards), start=1):
+                for shard_results in executor.map(_carve_job_shard, job_shards):
                     results.extend(shard_results)
-                    logger.info(
-                        "Carved shard %d/%d (%d structure(s) processed).",
-                        shard_index, len(job_shards), len(results))
             if legacy_shards:
                 for shard_results in executor.map(_carve_legacy_shard,
                                                   legacy_shards):
@@ -871,6 +969,12 @@ def compress_carved_structures(carve_dir: pathlib.Path,
             "Run `python setup.py build_binaries --inplace` before using "
             "--compress-structures.")
 
+    logger.info(
+        "Starting FoldComp compress of %s → %s with %d thread(s)...",
+        carve_dir,
+        output_db,
+        threads,
+    )
     subprocess.run(
         [
             str(foldcomp_bin),
@@ -884,6 +988,7 @@ def compress_carved_structures(carve_dir: pathlib.Path,
         ],
         check=True,
     )
+    logger.info("FoldComp compress finished; removing individual PDB files...")
     pdb_files = list(carve_dir.glob("*.pdb"))
     for pdb_file in pdb_files:
         pdb_file.unlink()

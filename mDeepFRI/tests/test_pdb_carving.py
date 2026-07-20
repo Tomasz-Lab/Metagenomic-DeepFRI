@@ -9,14 +9,16 @@ from biotite.structure import concatenate
 from biotite.structure.io.pdb import PDBFile
 
 from mDeepFRI.alignment import AlignmentResult
-from mDeepFRI.bio_utils import (ONE_TO_THREE, build_target_to_query_map,
-                                carve_aligned_pdb, chain_id_from_filename,
+from mDeepFRI.bio_utils import (ONE_TO_THREE, BACKBONE_ATOM_NAMES,
+                                build_target_to_query_map, carve_aligned_pdb,
+                                chain_id_from_filename,
                                 compress_carved_structures,
-                                extract_residues_coordinates,
+                                extract_pdb_header, extract_residues_coordinates,
                                 get_residue_atom_groups, load_structure,
                                 prefetch_template_structures,
-                                resolve_structure_chain,
-                                write_carved_pdbs, _get_template_for_carving)
+                                reattach_pdb_header, resolve_structure_chain,
+                                validate_backbone_pdb, write_carved_pdbs,
+                                _get_template_for_carving)
 
 
 class TestBuildTargetToQueryMap(unittest.TestCase):
@@ -126,25 +128,35 @@ class TestCarveAlignedPdb(unittest.TestCase):
         self.assertIn("REMARK   1 TEMPLATE STRUCTURE: mini_template",
                       pdb_content)
         self.assertIn("REMARK   1 QUERY SEQUENCE: test_query", pdb_content)
-        self.assertIn("RESIDUE IDENTITY MAY NOT MATCH ATOM GEOMETRY",
-                      pdb_content)
+        self.assertIn("SIDE CHAINS ARE REBUILT WITH PIPPACK", pdb_content)
         self.assertIn("SEQRES", pdb_content)
 
         template_groups = self.template_groups[:prefix_len]
         carved_atoms = PDBFile.read(
             StringIO(self._atom_lines(pdb_content))).get_structure()[0]
 
-        self.assertEqual(len(carved_atoms),
-                         sum(len(group) for group in template_groups))
+        self.assertTrue(
+            set(carved_atoms.atom_name.tolist()).issubset(BACKBONE_ATOM_NAMES))
+        self.assertEqual(len(carved_atoms), prefix_len * 4)
         for query_idx in range(prefix_len):
             expected_res_id = query_idx + 1
             carved_residue = carved_atoms[carved_atoms.res_id == expected_res_id]
             template_residue = template_groups[query_idx]
+            template_backbone = template_residue[np.isin(
+                template_residue.atom_name, list(BACKBONE_ATOM_NAMES))]
+            # Compare in N/CA/C/O order.
+            ordered_template = []
+            for atom_name in BACKBONE_ATOM_NAMES:
+                ordered_template.append(
+                    template_backbone[template_backbone.atom_name == atom_name])
+            template_backbone = concatenate(ordered_template)
             np.testing.assert_array_almost_equal(carved_residue.coord,
-                                                 template_residue.coord)
+                                                 template_backbone.coord)
             expected_name = query_sequence[query_idx]
             self.assertTrue(
                 np.all(carved_residue.res_name == ONE_TO_THREE[expected_name]))
+            self.assertEqual(sorted(carved_residue.atom_name.tolist()),
+                             sorted(BACKBONE_ATOM_NAMES))
 
     def test_query_insertion_is_seqres_only(self):
         mini_pdb, target_sequence = self._mini_structure_string(4)
@@ -173,6 +185,58 @@ class TestCarveAlignedPdb(unittest.TestCase):
             StringIO(self._atom_lines(pdb_content))).get_structure()[0]
         self.assertNotIn(3, carved_atoms.res_id)
         self.assertEqual(sorted(np.unique(carved_atoms.res_id)), [1, 2, 4, 5])
+
+
+class TestBackboneValidation(unittest.TestCase):
+    def setUp(self):
+        self.data_dir = Path(__file__).parent / "data"
+        self.structure_path = self.data_dir / "AF-A0A3B4WVX2-F1-model_v6.cif"
+        full_structure_string = self.structure_path.read_text(encoding="utf-8")
+        structure = load_structure(full_structure_string, filetype="mmcif")
+        self.template_groups = get_residue_atom_groups(structure, chain="A")
+
+    def _backbone_pdb(self, num_residues: int = 3) -> str:
+        groups = []
+        for group in self.template_groups[:num_residues]:
+            backbone = group[np.isin(group.atom_name, list(BACKBONE_ATOM_NAMES))]
+            groups.append(backbone)
+        structure = concatenate(groups)
+        pdb_file = PDBFile()
+        pdb_file.set_structure(structure)
+        buffer = StringIO()
+        pdb_file.write(buffer)
+        return buffer.getvalue()
+
+    def test_validate_complete_backbone(self):
+        result = validate_backbone_pdb(self._backbone_pdb(3))
+        self.assertTrue(result.ok)
+        self.assertEqual(result.residue_count, 3)
+        self.assertEqual(result.incomplete_residues, [])
+
+    def test_validate_ca_only_residue(self):
+        pdb_text = self._backbone_pdb(2)
+        # Drop N/C/O from residue 1 by rewriting ATOM lines.
+        lines = []
+        for line in pdb_text.splitlines():
+            if line.startswith("ATOM") and int(line[22:26]) == 1:
+                if line[12:16].strip() != "CA":
+                    continue
+            lines.append(line)
+        incomplete = "\n".join(lines) + "\n"
+        result = validate_backbone_pdb(incomplete)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.status, "ca_only_or_incomplete")
+        self.assertTrue(any(res_id == 1 for res_id, _ in result.incomplete_residues))
+
+    def test_reattach_pdb_header(self):
+        header = "REMARK   1 TEST\nSEQRES   1 A    2  MET PHE"
+        packed = "ATOM      1  N   MET A   1\nEND\n"
+        merged = reattach_pdb_header(header, packed)
+        self.assertTrue(merged.startswith("REMARK   1 TEST"))
+        self.assertIn("SEQRES", merged)
+        self.assertIn("ATOM", merged)
+        self.assertEqual(extract_pdb_header(merged).splitlines()[0],
+                         "REMARK   1 TEST")
 
 
 class TestPrefetchAndParallelCarve(unittest.TestCase):
