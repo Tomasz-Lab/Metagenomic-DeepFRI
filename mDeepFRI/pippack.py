@@ -16,15 +16,18 @@ import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
-from mDeepFRI.bio_utils import (extract_pdb_header, reattach_pdb_header,
-                                validate_backbone_pdb)
+from mDeepFRI.bio_utils import (BACKBONE_ATOM_NAMES, extract_pdb_header,
+                                reattach_pdb_header, validate_backbone_pdb)
 
 logger = logging.getLogger(__name__)
 
 WORKER_SCRIPT = Path(__file__).resolve().parent / "scripts" / "pippack_worker.py"
 DEFAULT_MODEL = "pippack_model_1"
+# PIPPack drops these residue types; we stash their backbone and reinsert after packing.
+NONSTANDARD_RES_NAMES = frozenset({"UNK", "SEC", "PYL"})
+ResidueKey = Tuple[str, int]
 
 
 class PippackConfigError(ValueError):
@@ -80,9 +83,112 @@ def _shard_paths(paths: Sequence[Path], worker_count: int) -> List[List[Path]]:
 def _count_ca_residues(pdb_text: str) -> int:
     count = 0
     for line in pdb_text.splitlines():
-        if line.startswith("ATOM") and line[12:16].strip() == "CA":
+        if line.startswith(("ATOM", "HETATM")) and line[12:16].strip() == "CA":
             count += 1
     return count
+
+
+def _pdb_res_name(line: str) -> str:
+    return line[17:20].strip() if len(line) >= 20 else ""
+
+
+def _pdb_chain_id(line: str) -> str:
+    return line[21:22] if len(line) >= 22 else " "
+
+
+def _pdb_res_id(line: str) -> int:
+    return int(line[22:26]) if len(line) >= 26 else 0
+
+
+def _pdb_atom_name(line: str) -> str:
+    return line[12:16].strip() if len(line) >= 16 else ""
+
+
+def _renumber_atom_serial(line: str, serial: int) -> str:
+    """Rewrite columns 7-11 with a new atom serial number."""
+    padded = line.ljust(80)
+    return f"{padded[:6]}{serial:5d}{padded[11:]}".rstrip()
+
+
+def stash_nonstandard_backbone(
+        pdb_text: str
+) -> Tuple[Dict[ResidueKey, List[str]], Dict[str, int]]:
+    """
+    Extract N/CA/C/O atoms for UNK/SEC/PYL residues from a carved PDB.
+
+    Returns:
+        Mapping of ``(chain_id, res_id)`` to backbone ATOM/HETATM lines, and
+        a per-residue-name count of stashed residues.
+    """
+    stashed: Dict[ResidueKey, List[str]] = {}
+    counts = {"UNK": 0, "SEC": 0, "PYL": 0}
+    for line in pdb_text.splitlines():
+        if not line.startswith(("ATOM", "HETATM")):
+            continue
+        res_name = _pdb_res_name(line)
+        if res_name not in NONSTANDARD_RES_NAMES:
+            continue
+        if _pdb_atom_name(line) not in BACKBONE_ATOM_NAMES:
+            continue
+        key = (_pdb_chain_id(line), _pdb_res_id(line))
+        if key not in stashed:
+            stashed[key] = []
+            counts[res_name] = counts.get(res_name, 0) + 1
+        stashed[key].append(line)
+    return stashed, counts
+
+
+def reinsert_nonstandard_backbone(
+        packed_text: str,
+        stashed: Dict[ResidueKey, List[str]],
+) -> str:
+    """
+    Merge PIPPack output with stashed non-standard backbone residues.
+
+    Residues are emitted in ``(chain_id, res_id)`` order. Atom serial numbers
+    are renumbered sequentially. Trailer records (TER/END/MODEL) from the
+    packed PDB are preserved at the end.
+    """
+    if not stashed:
+        return packed_text
+
+    packed_groups: Dict[ResidueKey, List[str]] = {}
+    trailer: List[str] = []
+    for line in packed_text.splitlines():
+        if line.startswith(("ATOM", "HETATM")):
+            key = (_pdb_chain_id(line), _pdb_res_id(line))
+            packed_groups.setdefault(key, []).append(line)
+        else:
+            trailer.append(line)
+
+    overlap = set(packed_groups) & set(stashed)
+    if overlap:
+        overlap_text = ", ".join(f"{c}:{r}" for c, r in sorted(overlap)[:5])
+        raise ValueError(
+            "Stashed non-standard residues already present in PIPPack output: "
+            f"{overlap_text}")
+
+    all_keys = sorted(set(packed_groups) | set(stashed),
+                      key=lambda item: (item[0], item[1]))
+    out_lines: List[str] = []
+    serial = 1
+    for key in all_keys:
+        residue_lines = packed_groups.get(key) or stashed[key]
+        for line in residue_lines:
+            out_lines.append(_renumber_atom_serial(line, serial))
+            serial += 1
+
+    for line in trailer:
+        if not line.strip():
+            continue
+        if line.startswith("TER"):
+            # Minimal TER; serial continues PDB convention after last atom.
+            out_lines.append(f"TER   {serial:5d}")
+            serial += 1
+        else:
+            out_lines.append(line)
+
+    return "\n".join(out_lines) + "\n"
 
 
 def _log_incomplete_backbone(query_id: str, validation) -> None:
@@ -216,9 +322,10 @@ def pack_carved_structures(
     """
     Validate carved backbone PDBs and rebuild side chains with PIPPack.
 
-    Incomplete / CA-only structures are skipped (backbone PDB kept). Packed
-    outputs replace the carved files in place after REMARK/SEQRES headers are
-    reattached.
+    Incomplete / CA-only structures are skipped (backbone PDB kept). UNK/SEC/PYL
+    backbone atoms are stashed before packing (PIPPack drops them) and
+    reinserted afterward. Packed outputs replace the carved files in place after
+    REMARK/SEQRES headers are reattached.
 
     Returns:
         Tuple of ``(packed_count, skipped_count)``.
@@ -263,6 +370,8 @@ def pack_carved_structures(
                 len(pdb_files))
     packable: List[Path] = []
     headers = {}
+    stashes: Dict[str, Dict[ResidueKey, List[str]]] = {}
+    stash_counts_by_name: Dict[str, Dict[str, int]] = {}
     skipped = 0
     for index, pdb_path in enumerate(pdb_files, start=1):
         pdb_text = pdb_path.read_text(encoding="utf-8")
@@ -272,6 +381,9 @@ def pack_carved_structures(
             _log_incomplete_backbone(pdb_path.stem, validation)
             continue
         headers[pdb_path.stem] = extract_pdb_header(pdb_text)
+        stashed, stash_counts = stash_nonstandard_backbone(pdb_text)
+        stashes[pdb_path.stem] = stashed
+        stash_counts_by_name[pdb_path.stem] = stash_counts
         packable.append(pdb_path)
         if index % 1000 == 0 or index == len(pdb_files):
             logger.info("  Backbone validation progress: %d/%d "
@@ -287,15 +399,18 @@ def pack_carved_structures(
     worker_count = _default_worker_count(device, threads, pippack_workers)
     worker_count = min(worker_count, len(packable))
     shards = _shard_paths(packable, worker_count)
+    stashed_residue_count = sum(len(items) for items in stashes.values())
     logger.info(
         "Starting PIPPack packing of %d structure(s) with %d single-threaded "
-        "worker(s) on %s (skipped %d incomplete; n_recycle=%d, "
+        "worker(s) on %s (skipped %d incomplete; %d non-standard backbone "
+        "residue(s) will be reinserted after packing; n_recycle=%d, "
         "temperature=%s, use_resample=%s). Workers run until all shards "
         "finish — this is usually the longest step.",
         len(packable),
         len(shards),
         device,
         skipped,
+        stashed_residue_count,
         n_recycle,
         temperature,
         use_resample,
@@ -342,6 +457,8 @@ def pack_carved_structures(
 
         logger.info("Merging packed PDBs and reattaching SEQRES/REMARK headers...")
         packed_count = 0
+        total_input_ca = 0
+        reinserted_counts = {"UNK": 0, "SEC": 0, "PYL": 0}
         for merge_index, pdb_path in enumerate(packable, start=1):
             name = pdb_path.stem
             packed_path = packed_dir / f"{name}.pdb"
@@ -352,26 +469,71 @@ def pack_carved_structures(
                 )
                 continue
 
+            input_text = pdb_path.read_text(encoding="utf-8")
+            input_ca = _count_ca_residues(input_text)
+            stashed = stashes.get(name, {})
             packed_text = packed_path.read_text(encoding="utf-8")
-            input_ca = _count_ca_residues(pdb_path.read_text(encoding="utf-8"))
             output_ca = _count_ca_residues(packed_text)
-            if output_ca < input_ca:
+            expected_packed_ca = input_ca - len(stashed)
+            if output_ca < expected_packed_ca:
                 logger.warning(
-                    "%s: PIPPack output has fewer CA residues (%d < %d); "
+                    "%s: PIPPack output has fewer CA residues than expected "
+                    "(%d < %d after accounting for %d stashed non-standard); "
                     "keeping backbone-only PDB.",
                     name,
                     output_ca,
+                    expected_packed_ca,
+                    len(stashed),
+                )
+                continue
+
+            try:
+                merged_atoms = reinsert_nonstandard_backbone(
+                    packed_text, stashed)
+            except ValueError as exc:
+                logger.warning(
+                    "%s: non-standard backbone reinsertion failed (%s); "
+                    "keeping backbone-only PDB.",
+                    name,
+                    exc,
+                )
+                continue
+
+            merged_ca = _count_ca_residues(merged_atoms)
+            if merged_ca != input_ca:
+                logger.warning(
+                    "%s: after UNK/SEC/PYL reinsertion CA count mismatch "
+                    "(%d != %d); keeping backbone-only PDB.",
+                    name,
+                    merged_ca,
                     input_ca,
                 )
                 continue
 
-            merged = reattach_pdb_header(headers[name], packed_text)
+            for res_name, count in stash_counts_by_name.get(name, {}).items():
+                reinserted_counts[res_name] = (
+                    reinserted_counts.get(res_name, 0) + count)
+            total_input_ca += input_ca
+
+            merged = reattach_pdb_header(headers[name], merged_atoms)
             pdb_path.write_text(merged, encoding="utf-8")
             packed_count += 1
             if merge_index % 2000 == 0 or merge_index == len(packable):
                 logger.info("  Merge progress: %d/%d.", merge_index,
                             len(packable))
 
-    logger.info("PIPPack packed %d structure(s); skipped %d incomplete.",
-                packed_count, skipped)
+    unk_count = reinserted_counts.get("UNK", 0)
+    unk_pct = (100.0 * unk_count / total_input_ca) if total_input_ca else 0.0
+    logger.info(
+        "PIPPack packed %d structure(s); skipped %d incomplete. "
+        "Reinserted UNK backbone for %d residue(s) (%.2f%% of %d packed "
+        "residues); SEC=%d, PYL=%d.",
+        packed_count,
+        skipped,
+        unk_count,
+        unk_pct,
+        total_input_ca,
+        reinserted_counts.get("SEC", 0),
+        reinserted_counts.get("PYL", 0),
+    )
     return packed_count, skipped

@@ -364,6 +364,16 @@ Inference knobs (PIPPack defaults; safe to leave unchanged):
 enabled by default. It can improve packing quality but is slower; enable it
 explicitly when you want PIPPack's resampling pass.
 
+If unknown residues "X" are present in the query sequence, normally PiPPack would drop them.
+In Metagenomic-DeepFRI those are stashed and reintroduced after side-chain packing
+as backbone only positions. 
+
+Please also note, that due to unfortunate atom masking in PIPPack, CA coordinates summing to 0
+are dropped - this sometimes happens by chance. The offending code comes from inference.py:
+`atom_mask = (np.sum(atom_positions, axis=-1) != 0.0)`
+You can apply a fix changing this line to:
+`atom_mask = atom37_atom_exists[i].detach().cpu().numpy().astype(np.int32)`
+
 Carving itself also respects `--threads`. Use `--compress-structures` to
 build a FoldComp database at `{output_path}/carved_pdbs.foldcomp` from the
 carved/packed PDB directory (requires ``foldcomp_bin``; run
