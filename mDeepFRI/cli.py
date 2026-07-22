@@ -409,8 +409,8 @@ def search_databases(ctx, input, output, db_path, mmseqs_sensitivity,
     default=False,
     type=bool,
     is_flag=True,
-    help="Export PyOpal pairwise alignments as FASTA files under "
-    "raw_alignments/ (query + target sequences and alignment string).",
+    help="Export PyOpal pairwise alignments as a single FASTA file "
+    "raw_alignments.fasta (query + target sequences and alignment string).",
 )
 @click.option(
     "--carve-pdbs",
@@ -426,7 +426,7 @@ def search_databases(ctx, input, output, db_path, mmseqs_sensitivity,
     default=False,
     type=bool,
     is_flag=True,
-    help="Compress carved PDB files into a FoldComp database (requires --carve-pdbs).",
+    help="Compress carved PDB files into carved_pdbs.tar.gz (requires --carve-pdbs).",
 )
 @click.option(
     "--pippack-dir",
@@ -562,10 +562,13 @@ def predict_function(ctx, input, db_path, weights, output, processing_modes,
         raise click.UsageError(
             "--compress-structures requires --carve-pdbs.")
     if carve_pdbs:
-        from mDeepFRI.pippack import PippackConfigError, resolve_pippack_dir
+        from mDeepFRI.pippack import (PippackConfigError, probe_pippack_torch,
+                                      resolve_pippack_dir)
         try:
             resolve_pippack_dir(
                 str(pippack_dir) if pippack_dir is not None else None)
+            probe_pippack_torch(
+                str(pippack_python) if pippack_python is not None else None)
         except PippackConfigError as exc:
             raise click.UsageError(str(exc)) from exc
     if not skip_prediction and weights is None:

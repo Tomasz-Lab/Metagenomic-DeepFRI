@@ -781,13 +781,13 @@ def predict_protein_function(
             Defaults to False.
         save_cmaps (bool, optional): Save generated contact maps to disk.
             Defaults to False.
-        save_raw_alignments (bool, optional): Write PyOpal alignments as FASTA
-            files under ``raw_alignments/``. Defaults to False.
+        save_raw_alignments (bool, optional): Write PyOpal alignments as a single
+            FASTA file ``raw_alignments.fasta``. Defaults to False.
         carve_pdbs (bool, optional): Write query-aligned backbone PDBs carved from
             template structures, then rebuild side chains with PIPPack.
             Defaults to False.
-        compress_structures (bool, optional): Compress carved PDB files into a
-            FoldComp database after carving. Requires ``carve_pdbs``.
+        compress_structures (bool, optional): Compress carved PDB files into
+            ``carved_pdbs.tar.gz`` after carving. Requires ``carve_pdbs``.
             Defaults to False.
         pippack_dir (str, optional): Path to a PIPPack checkout (or set
             ``PIPPACK_DIR``). Required when ``carve_pdbs`` is True.
@@ -1005,13 +1005,14 @@ def predict_protein_function(
             np.save(cmap_file, cmap)
 
     if save_raw_alignments:
-        raw_dir = output_path / "raw_alignments"
+        raw_file = output_path / "raw_alignments.fasta"
         logger.info("=" * 60)
-        logger.info("STEP: Save raw PyOpal alignments → %s", raw_dir)
+        logger.info("STEP: Save raw PyOpal alignments → %s", raw_file)
         logger.info("=" * 60)
         written = write_raw_alignments(
-            [aln for aln, _ in aligned_cmaps], raw_dir)
-        logger.info("STEP DONE: Wrote %d raw alignment FASTA file(s).", written)
+            [aln for aln, _ in aligned_cmaps], raw_file)
+        logger.info("STEP DONE: Wrote %d raw alignment(s) to %s.", written,
+                    raw_file)
 
     aligned_queries = [aln.query_name for aln, _ in aligned_cmaps]
     unaligned_queries = {
@@ -1093,24 +1094,21 @@ def predict_protein_function(
         if compress_structures:
             if carved_count == 0:
                 logger.warning(
-                    "No carved PDB files to compress; skipping FoldComp compression."
+                    "No carved PDB files to compress; skipping tar.gz compression."
                 )
             else:
-                foldcomp_out = output_path / "carved_pdbs.foldcomp"
+                archive_out = output_path / "carved_pdbs.tar.gz"
                 logger.info("=" * 60)
                 logger.info(
-                    "STEP: FoldComp compression → %s (this may take a while)",
-                    foldcomp_out,
+                    "STEP: tar.gz compression → %s",
+                    archive_out,
                 )
                 logger.info("=" * 60)
                 step_t0 = time.perf_counter()
-                compress_carved_structures(
-                    carve_dir,
-                    foldcomp_out,
-                    threads=threads)
-                step_timings.append(("FoldComp compression",
+                compress_carved_structures(carve_dir, archive_out)
+                step_timings.append(("tar.gz structure compression",
                                      time.perf_counter() - step_t0))
-                logger.info("STEP DONE: FoldComp compression finished.")
+                logger.info("STEP DONE: tar.gz compression finished.")
 
     if skip_prediction:
         logger.info("=" * 60)

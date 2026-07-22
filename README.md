@@ -300,8 +300,9 @@ mDeepFRI predict-function -i /path/to/protein/sequences \
 
 ### 4b. Raw PyOpal alignments
 
-Use `--save-raw-alignments` to export each pairwise PyOpal alignment under
-`{output_path}/raw_alignments/{query_id}.fasta` in this format:
+Use `--save-raw-alignments` to export all pairwise PyOpal alignments into a
+single file `{output_path}/raw_alignments.fasta` in this format (one block per
+query, concatenated):
 
 ```text
 >query_id|target=target_id|identity=0.8589|coverage=1.0000|score=2227
@@ -326,8 +327,9 @@ template structure selected by MMseqs2/PyOpal alignment (or from
   template. Residue names follow the query sequence.
 - **Side chains** are rebuilt with [PIPPack](https://github.com/Kuhlman-Lab/PIPPack)
   after carving. Packing is always part of `--carve-pdbs`.
-- Templates with CA-only / incomplete backbone residues are **not packed**;
-  a warning is logged and the backbone-only PDB is kept.
+- Templates with CA-only / incomplete backbone residues are still carved
+  (available atoms kept) with a warning; packing is **skipped** and the
+  partial backbone PDB is kept.
 
 This is different from `--save-structures`, which saves the raw template
 structures used as alignment targets.
@@ -375,10 +377,10 @@ You can apply a fix changing this line to:
 `atom_mask = atom37_atom_exists[i].detach().cpu().numpy().astype(np.int32)`
 
 Carving itself also respects `--threads`. Use `--compress-structures` to
-build a FoldComp database at `{output_path}/carved_pdbs.foldcomp` from the
-carved/packed PDB directory (requires ``foldcomp_bin``; run
-``python setup.py build_binaries --inplace``). Individual PDB files are
-deleted after compression succeeds.
+archive carved/packed PDBs as `{output_path}/carved_pdbs.tar.gz`. Individual
+PDB files are deleted after compression succeeds. (FoldComp is not used for
+carved outputs: discontinuous residue numbering from alignment gaps breaks
+FoldComp decompress.)
 
 To run alignment and carving only (no DeepFRI inference), use
 `--skip-prediction` or pass `-p none`. Weights are not required in that mode.
@@ -408,7 +410,7 @@ On multi-GPU hosts you can raise `--pippack-workers` and assign devices via
 
 If argument `threads` is provided, the app will parallelize certain steps
 (alignment, contact map alignment, PDB carving, PIPPack side-chain packing on
-CPU, FoldComp compression, and functional annotation). GPU is often used
+CPU, structure compression, and functional annotation). GPU is often used
 to speed up neural networks. By default, `mDeepFRI` runs on CPU. During
 prediction it tries the CUDA execution provider first and falls back to CPU
 if CUDA is unavailable. PIPPack packing can use `--pippack-device gpu`

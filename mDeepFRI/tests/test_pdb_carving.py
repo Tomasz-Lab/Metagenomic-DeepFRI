@@ -186,6 +186,43 @@ class TestCarveAlignedPdb(unittest.TestCase):
         self.assertNotIn(3, carved_atoms.res_id)
         self.assertEqual(sorted(np.unique(carved_atoms.res_id)), [1, 2, 4, 5])
 
+    def test_incomplete_backbone_residue_is_written_and_fails_validation(self):
+        mini_pdb, target_sequence = self._mini_structure_string(3)
+        # Drop O from the middle residue in the mini template PDB.
+        lines = []
+        for line in mini_pdb.splitlines():
+            if line.startswith("ATOM") and int(line[22:26]) == 2:
+                if line[12:16].strip() == "O":
+                    continue
+            lines.append(line)
+        incomplete_pdb = "\n".join(lines) + "\n"
+
+        alignment = self._make_alignment(
+            query_sequence=target_sequence,
+            target_sequence=target_sequence,
+            gapped_query=target_sequence,
+            gapped_target=target_sequence,
+            structure_path=str(self.structure_path),
+            alignment_string="MMM",
+        )
+        pdb_content = carve_aligned_pdb(alignment,
+                                        incomplete_pdb,
+                                        filetype="pdb",
+                                        chain="A")
+        carved_atoms = PDBFile.read(
+            StringIO(self._atom_lines(pdb_content))).get_structure()[0]
+        # All three residues are present; residue 2 lacks O.
+        self.assertEqual(sorted(np.unique(carved_atoms.res_id)), [1, 2, 3])
+        res2 = carved_atoms[carved_atoms.res_id == 2]
+        self.assertNotIn("O", set(res2.atom_name.tolist()))
+        self.assertIn("CA", set(res2.atom_name.tolist()))
+
+        validation = validate_backbone_pdb(pdb_content)
+        self.assertFalse(validation.ok)
+        self.assertTrue(
+            any(res_id == 2 and "O" in missing
+                for res_id, missing in validation.incomplete_residues))
+
 
 class TestBackboneValidation(unittest.TestCase):
     def setUp(self):
@@ -307,47 +344,45 @@ class TestPrefetchAndParallelCarve(unittest.TestCase):
             db_name="custom_mapping",
             structure_path=str(self.structure_path),
         )
-        structure_string, filetype, chain = _get_template_for_carving(
+        structure_string, filetype, chain, structure = _get_template_for_carving(
             alignment, ())
         self.assertEqual(filetype, "mmcif")
         self.assertEqual(chain, "A")
         self.assertGreater(len(structure_string), 1000)
         self.assertEqual(structure_string, self.structure_string)
+        self.assertGreater(len(structure), 0)
 
-    @patch("mDeepFRI.bio_utils.FOLDCOMP_PATH")
-    @patch("mDeepFRI.bio_utils.subprocess.run")
-    def test_compress_carved_structures_invokes_foldcomp(
-            self, mock_run, mock_foldcomp_path):
-        mock_foldcomp_path.exists.return_value = True
+    def test_compress_carved_structures_writes_tar_gz(self):
+        import tarfile
+
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             carve_dir = temp_path / "carved_pdbs"
             carve_dir.mkdir()
-            (carve_dir / "q1.pdb").write_text("ATOM\n", encoding="utf-8")
-            (carve_dir / "q2.pdb").write_text("ATOM\n", encoding="utf-8")
-            compress_carved_structures(carve_dir,
-                                       temp_path / "carved_pdbs.foldcomp",
-                                       threads=3)
-        mock_run.assert_called_once()
-        args = mock_run.call_args[0][0]
-        self.assertIn("compress", args)
-        self.assertIn("-d", args)
-        self.assertIn("-t", args)
-        self.assertIn("3", args)
-        self.assertFalse(carve_dir.exists())
+            (carve_dir / "q1.pdb").write_text("ATOM q1\n", encoding="utf-8")
+            (carve_dir / "q2.pdb").write_text("ATOM q2\n", encoding="utf-8")
+            archive = temp_path / "carved_pdbs.tar.gz"
+            compress_carved_structures(carve_dir, archive)
 
-    @patch("mDeepFRI.bio_utils.FOLDCOMP_PATH")
-    def test_compress_carved_structures_requires_binary(self,
-                                                        mock_foldcomp_path):
-        mock_foldcomp_path.exists.return_value = False
+            self.assertTrue(archive.exists())
+            self.assertFalse(carve_dir.exists())
+            with tarfile.open(archive, "r:gz") as tar:
+                names = sorted(tar.getnames())
+                self.assertEqual(names, ["q1.pdb", "q2.pdb"])
+                self.assertEqual(
+                    tar.extractfile("q1.pdb").read().decode("utf-8"),
+                    "ATOM q1\n",
+                )
+
+    def test_compress_carved_structures_skips_empty_dir(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             carve_dir = temp_path / "carved_pdbs"
             carve_dir.mkdir()
-            (carve_dir / "q1.pdb").write_text("ATOM\n", encoding="utf-8")
-            with self.assertRaises(FileNotFoundError):
-                compress_carved_structures(
-                    carve_dir, temp_path / "carved_pdbs.foldcomp")
+            archive = temp_path / "carved_pdbs.tar.gz"
+            compress_carved_structures(carve_dir, archive)
+            self.assertFalse(archive.exists())
+            self.assertTrue(carve_dir.exists())
 
 
 if __name__ == "__main__":

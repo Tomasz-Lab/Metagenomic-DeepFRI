@@ -190,24 +190,24 @@ def format_raw_alignment_fasta(alignment: AlignmentResult) -> str:
 
 def write_raw_alignments(
         alignments: list[AlignmentResult],
-        output_dir,
+        output_file,
 ) -> int:
     """
-    Write one raw-alignment FASTA file per query under ``output_dir``.
+    Write all raw alignments into a single FASTA file.
+
+    Each alignment is formatted by :func:`format_raw_alignment_fasta` and
+    concatenated in order.
 
     Returns:
-        Number of files written.
+        Number of alignments written.
     """
     from pathlib import Path
 
-    out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
-    written = 0
-    for alignment in alignments:
-        path = out / f"{alignment.query_name}.fasta"
-        path.write_text(format_raw_alignment_fasta(alignment), encoding="utf-8")
-        written += 1
-    return written
+    out = Path(output_file)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    blocks = [format_raw_alignment_fasta(alignment) for alignment in alignments]
+    out.write_text("".join(blocks), encoding="utf-8")
+    return len(alignments)
 
 
 def _uppercase_sequence(seq: str) -> str:

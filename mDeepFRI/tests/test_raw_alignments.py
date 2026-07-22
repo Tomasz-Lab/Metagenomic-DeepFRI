@@ -55,13 +55,48 @@ class TestRawAlignmentExport(unittest.TestCase):
             score=score,
         )
         with tempfile.TemporaryDirectory() as temp_dir:
-            written = write_raw_alignments([alignment], temp_dir)
+            out_file = Path(temp_dir) / "raw_alignments.fasta"
+            written = write_raw_alignments([alignment], out_file)
             self.assertEqual(written, 1)
-            path = Path(temp_dir) / "q1.fasta"
-            content = path.read_text(encoding="utf-8")
+            content = out_file.read_text(encoding="utf-8")
             self.assertIn(f"score={int(round(score))}", content)
             self.assertIn(f"#alignment_string: {alignment_string}", content)
             self.assertIn("X", alignment_string)
+
+    def test_write_raw_alignments_concatenates_into_one_file(self):
+        alignments = [
+            AlignmentResult(
+                query_name="q1",
+                query_sequence="AAA",
+                target_name="t1",
+                target_sequence="AAA",
+                alignment="MMM",
+                query_identity=1.0,
+                query_coverage=1.0,
+                target_coverage=1.0,
+                score=10,
+            ),
+            AlignmentResult(
+                query_name="q2",
+                query_sequence="GGG",
+                target_name="t2",
+                target_sequence="GGG",
+                alignment="MMM",
+                query_identity=1.0,
+                query_coverage=1.0,
+                target_coverage=1.0,
+                score=20,
+            ),
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out_file = Path(temp_dir) / "raw_alignments.fasta"
+            written = write_raw_alignments(alignments, out_file)
+            self.assertEqual(written, 2)
+            content = out_file.read_text(encoding="utf-8")
+            self.assertEqual(content.count(">q1|"), 1)
+            self.assertEqual(content.count(">q2|"), 1)
+            self.assertEqual(content.count("#alignment_string:"), 2)
+            self.assertFalse((Path(temp_dir) / "q1.fasta").exists())
 
 
 if __name__ == "__main__":

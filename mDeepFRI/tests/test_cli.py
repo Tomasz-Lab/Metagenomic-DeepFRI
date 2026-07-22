@@ -110,12 +110,13 @@ class TestCLI(unittest.TestCase):
         self.assertEqual(mock_predict_protein_function.call_args.kwargs["threads"],
                          12)
 
+    @patch("mDeepFRI.pippack.probe_pippack_torch")
     @patch("mDeepFRI.pippack.resolve_pippack_dir")
     @patch("mDeepFRI.cli.predict_protein_function")
     @patch("mDeepFRI.cli.load_query_file")
     def test_predict_function_passes_pippack_options(
             self, mock_load_query_file, mock_predict_protein_function,
-            mock_resolve):
+            mock_resolve, mock_probe):
         input_file = Path(__file__).parent / "data" / "small_query.faa"
         mapping_file = Path(__file__).parent / "data" / "small_mapping.tsv"
         mock_load_query_file.return_value.sequences = {}
@@ -123,6 +124,7 @@ class TestCLI(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             pippack_dir = Path(temp_dir)
             mock_resolve.return_value = pippack_dir
+            mock_probe.return_value = "/fake/pippack/python"
 
             result = self.runner.invoke(main, [
                 "predict-function",
@@ -150,6 +152,7 @@ class TestCLI(unittest.TestCase):
             ])
 
         self.assertEqual(result.exit_code, 0, result.output)
+        mock_probe.assert_called_once()
         kwargs = mock_predict_protein_function.call_args.kwargs
         self.assertTrue(kwargs["carve_pdbs"])
         self.assertEqual(kwargs["pippack_device"], "gpu")

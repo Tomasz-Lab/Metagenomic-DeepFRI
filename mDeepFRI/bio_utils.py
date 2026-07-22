@@ -25,8 +25,8 @@ import logging
 import multiprocessing
 import os
 import pathlib
-import subprocess
 import sys
+import tarfile
 from concurrent.futures import ProcessPoolExecutor
 from io import StringIO
 from typing import Dict, List, Literal, NamedTuple, Optional, Tuple
@@ -40,7 +40,6 @@ from biotite.structure.io.pdbx import CIFFile, get_structure
 
 from mDeepFRI.alignment import AlignmentResult
 from mDeepFRI.contact_map_utils import align_contact_map, pairwise_sqeuclidean
-from mDeepFRI.mmseqs import FOLDCOMP_PATH
 
 logger = logging.getLogger(__name__)
 handler = logging.StreamHandler(sys.stdout)
@@ -421,22 +420,29 @@ def _format_carved_pdb_header(alignment: AlignmentResult,
     return remarks + _format_seqres_records(alignment.query_sequence, chain)
 
 
-def _extract_backbone_atoms(residue_atoms: np.ndarray,
-                            query_idx: int) -> np.ndarray:
-    """Keep only N/CA/C/O atoms from a residue group."""
+def _extract_backbone_atoms(
+        residue_atoms: np.ndarray,
+        query_idx: int,
+) -> Tuple[Optional[np.ndarray], Tuple[str, ...]]:
+    """
+    Keep N/CA/C/O atoms from a residue group (canonical order).
+
+    Incomplete residues are returned with whatever backbone atoms are present
+    so carving can continue. Returns ``(None, missing)`` when no backbone atoms
+    exist at all.
+    """
+    del query_idx  # retained for call-site clarity / future logging
     backbone_mask = np.isin(residue_atoms.atom_name, list(BACKBONE_ATOM_NAMES))
     backbone_atoms = residue_atoms[backbone_mask]
     present = set(backbone_atoms.atom_name.tolist())
-    missing = [name for name in BACKBONE_ATOM_NAMES if name not in present]
-    if missing:
-        raise ValueError(
-            f"Template residue mapped to query position {query_idx + 1} is "
-            f"missing backbone atom(s): {', '.join(missing)}.")
-    # Preserve canonical backbone order N, CA, C, O.
+    missing = tuple(name for name in BACKBONE_ATOM_NAMES if name not in present)
+    if not present:
+        return None, missing
     ordered = []
     for atom_name in BACKBONE_ATOM_NAMES:
-        ordered.append(backbone_atoms[backbone_atoms.atom_name == atom_name])
-    return concatenate(ordered)
+        if atom_name in present:
+            ordered.append(backbone_atoms[backbone_atoms.atom_name == atom_name])
+    return concatenate(ordered), missing
 
 
 def carve_aligned_pdb(alignment: AlignmentResult,
@@ -451,7 +457,8 @@ def carve_aligned_pdb(alignment: AlignmentResult,
     Only backbone atoms (N, CA, C, O) are transferred from mapped template
     residues. Residue names and numbering follow the query sequence (1-based).
     Query insertions aligned to template gaps are included in SEQRES only.
-    Side chains are expected to be rebuilt by PIPPack after carving.
+    Residues with incomplete backbone are still written with available atoms;
+    a warning is logged and PIPPack will skip packing after validation.
 
     Args:
         alignment: Pairwise alignment with gapped sequences.
@@ -475,12 +482,19 @@ def carve_aligned_pdb(alignment: AlignmentResult,
             f"alignment target length ({len(target_to_query)}).")
 
     carved_groups: list[np.ndarray] = []
+    incomplete: List[Tuple[int, Tuple[str, ...]]] = []
     for target_idx, query_idx in enumerate(target_to_query):
         if query_idx < 0:
             continue
 
-        residue_atoms = _extract_backbone_atoms(
+        residue_atoms, missing = _extract_backbone_atoms(
             residue_groups[target_idx].copy(), query_idx)
+        if residue_atoms is None:
+            incomplete.append((query_idx + 1, missing))
+            continue
+        if missing:
+            incomplete.append((query_idx + 1, missing))
+
         three_letter = _query_residue_to_three_letter(
             alignment.query_sequence[query_idx])
         residue_atoms.res_name[:] = three_letter
@@ -489,6 +503,21 @@ def carve_aligned_pdb(alignment: AlignmentResult,
                                             output_chain,
                                             dtype=residue_atoms.chain_id.dtype)
         carved_groups.append(residue_atoms)
+
+    if incomplete:
+        examples = incomplete[:5]
+        example_text = ", ".join(
+            f"res_id={res_id} missing {','.join(missing) or 'backbone'}"
+            for res_id, missing in examples)
+        logger.warning(
+            "%s: %d mapped template residue(s) have incomplete backbone "
+            "(%s%s). Writing partial carved PDB; PIPPack packing will be "
+            "skipped for this structure.",
+            alignment.query_name,
+            len(incomplete),
+            example_text,
+            "" if len(incomplete) <= 5 else ", ...",
+        )
 
     header_lines = _format_carved_pdb_header(alignment, chain=output_chain)
     if not carved_groups:
@@ -742,42 +771,54 @@ def prefetch_template_structures(
     return cache
 
 
-def _resolve_carving_chain(alignment: AlignmentResult, structure_string: str,
-                           filetype: str, chain: str) -> str:
+def _resolve_carving_chain(
+        alignment: AlignmentResult,
+        structure_string: str,
+        filetype: str,
+        chain: str,
+        structure: Optional[np.ndarray] = None,
+) -> Tuple[str, np.ndarray]:
     structure_path = alignment.structure_path
     if not structure_path and "_" in alignment.target_name:
         structure_path = alignment.target_name
-    structure = load_structure(structure_string, filetype=filetype)
-    return resolve_structure_chain(structure, structure_path, chain)
+    if structure is None:
+        structure = load_structure(structure_string, filetype=filetype)
+    return resolve_structure_chain(structure, structure_path, chain), structure
 
 
 def _get_template_for_carving(
         alignment: AlignmentResult,
-        databases: Tuple[object, ...] = ()) -> Tuple[str, str, str]:
+        databases: Tuple[object, ...] = ()
+) -> Tuple[str, str, str, np.ndarray]:
+    """
+    Resolve template PDB/mmCIF text, filetype, chain, and parsed structure.
+
+    The structure is parsed once so callers can reuse it for carving.
+    """
     if alignment.structure_path:
         struct_path = pathlib.Path(alignment.structure_path)
         if struct_path.exists():
             structure_string = struct_path.read_text(encoding="utf-8")
             filetype = _filetype_from_path(str(struct_path))
             chain = _alignment_chain(alignment)
-            chain = _resolve_carving_chain(alignment, structure_string,
-                                           filetype, chain)
-            return structure_string, filetype, chain
+            chain, structure = _resolve_carving_chain(
+                alignment, structure_string, filetype, chain)
+            return structure_string, filetype, chain, structure
 
     if alignment.structure_string:
         filetype = "mmcif"
         if alignment.structure_path:
             filetype = _filetype_from_path(alignment.structure_path)
         chain = _alignment_chain(alignment)
-        chain = _resolve_carving_chain(alignment, alignment.structure_string,
-                                       filetype, chain)
-        return alignment.structure_string, filetype, chain
+        chain, structure = _resolve_carving_chain(
+            alignment, alignment.structure_string, filetype, chain)
+        return alignment.structure_string, filetype, chain, structure
 
     structure_string, filetype, chain = resolve_template_structure(
         alignment, databases)
-    chain = _resolve_carving_chain(alignment, structure_string, filetype,
-                                   chain)
-    return structure_string, filetype, chain
+    chain, structure = _resolve_carving_chain(alignment, structure_string,
+                                              filetype, chain)
+    return structure_string, filetype, chain, structure
 
 
 class CarveJob(NamedTuple):
@@ -828,9 +869,8 @@ def _carve_from_database(
         databases: Tuple[object, ...],
         carve_dir: str) -> Tuple[str, Optional[str]]:
     try:
-        structure_string, filetype, chain = _get_template_for_carving(
+        structure_string, filetype, chain, structure = _get_template_for_carving(
             alignment, databases)
-        structure = load_structure(structure_string, filetype=filetype)
         pdb_content = carve_aligned_pdb(alignment,
                                         structure_string,
                                         filetype=filetype,
@@ -844,15 +884,18 @@ def _carve_from_database(
         return alignment.query_name, str(exc)
 
 
-def _carve_job_shard(jobs: List[CarveJob]) -> List[Tuple[str, Optional[str]]]:
+def _carve_file_job_shard(
+        jobs: List[CarveJob]) -> List[Tuple[str, Optional[str]]]:
     return [_carve_single_job(job) for job in jobs]
 
 
-def _carve_legacy_shard(
+def _carve_database_job_shard(
         jobs: List[Tuple[AlignmentResult, Tuple[object, ...], str]]
 ) -> List[Tuple[str, Optional[str]]]:
-    return [_carve_from_database(alignment, databases, carve_dir)
-            for alignment, databases, carve_dir in jobs]
+    return [
+        _carve_from_database(alignment, databases, carve_dir)
+        for alignment, databases, carve_dir in jobs
+    ]
 
 
 def write_carved_pdbs(
@@ -864,13 +907,14 @@ def write_carved_pdbs(
     """
     Carve and write query-aligned PDB files in parallel.
 
-    Template structures are loaded from ``structure_path`` in each worker
-    process. Jobs carry only the alignment fields required for carving so
-    worker processes can be forked without duplicating contact maps.
+    Alignments with ``structure_path`` are carved by reading that file in each
+    worker. Alignments without a path (FoldComp / PDB100 hits) are resolved via
+    ``databases``.
 
     Args:
         aligned_cmaps: Aligned structure results from the pipeline.
-        databases: Unused; kept for API compatibility.
+        databases: FoldComp/PDB database objects used when
+            ``alignment.structure_path`` is missing.
         carve_dir: Output directory for carved PDB files.
         threads: Worker count for parallel carving.
         release_contact_maps: Drop contact maps and template coordinates
@@ -890,7 +934,7 @@ def write_carved_pdbs(
             alignment.coords = None
         gc.collect()
 
-    jobs = [
+    file_jobs = [
         CarveJob(alignment.query_name,
                  alignment.structure_path,
                  alignment.query_sequence,
@@ -901,39 +945,42 @@ def write_carved_pdbs(
         for alignment in alignments
         if alignment.structure_path
     ]
-    legacy_jobs = [(alignment, databases, str(carve_dir))
-                   for alignment in alignments
-                   if not alignment.structure_path]
-    if not jobs and not legacy_jobs:
+    database_jobs = [(alignment, databases, str(carve_dir))
+                     for alignment in alignments
+                     if not alignment.structure_path]
+    total_jobs = len(file_jobs) + len(database_jobs)
+    if total_jobs == 0:
         return 0
 
-    worker_count = max(1, min(threads, len(jobs) or len(legacy_jobs)))
+    worker_count = max(1, min(threads, total_jobs))
     logger.info("Carving %d structure(s) using %d parallel worker process(es).",
-                len(jobs) + len(legacy_jobs), worker_count)
+                total_jobs, worker_count)
 
     carved_count = 0
     results: List[Tuple[str, Optional[str]]] = []
 
     if worker_count == 1:
-        results.extend(_carve_job_shard(jobs))
-        results.extend(_carve_legacy_shard(legacy_jobs))
+        results.extend(_carve_file_job_shard(file_jobs))
+        results.extend(_carve_database_job_shard(database_jobs))
     else:
         ctx = multiprocessing.get_context("fork")
-        job_shards = [jobs[i::worker_count] for i in range(worker_count)]
-        job_shards = [shard for shard in job_shards if shard]
-        legacy_shards = [legacy_jobs[i::worker_count]
-                         for i in range(worker_count)]
-        legacy_shards = [shard for shard in legacy_shards if shard]
+        file_shards = [file_jobs[i::worker_count] for i in range(worker_count)]
+        file_shards = [shard for shard in file_shards if shard]
+        database_shards = [
+            database_jobs[i::worker_count] for i in range(worker_count)
+        ]
+        database_shards = [shard for shard in database_shards if shard]
 
         with ProcessPoolExecutor(max_workers=worker_count,
                                  mp_context=ctx,
                                  initializer=_init_parallel_worker) as executor:
-            if job_shards:
-                for shard_results in executor.map(_carve_job_shard, job_shards):
+            if file_shards:
+                for shard_results in executor.map(_carve_file_job_shard,
+                                                  file_shards):
                     results.extend(shard_results)
-            if legacy_shards:
-                for shard_results in executor.map(_carve_legacy_shard,
-                                                  legacy_shards):
+            if database_shards:
+                for shard_results in executor.map(_carve_database_job_shard,
+                                                  database_shards):
                     results.extend(shard_results)
 
     for query_name, error in results:
@@ -947,49 +994,38 @@ def write_carved_pdbs(
 
 
 def compress_carved_structures(carve_dir: pathlib.Path,
-                               output_db: pathlib.Path,
-                               threads: int = 1) -> None:
+                               output_archive: pathlib.Path) -> None:
     """
-    Compress carved PDB files into a FoldComp database via ``foldcomp_bin``.
+    Compress carved PDB files into a ``.tar.gz`` archive.
+
+    FoldComp is not used here: discontinuous query residue numbering (from
+    alignment gaps / SEQRES-only insertions) is common in carved PDBs and is
+    not handled reliably by FoldComp decompress.
 
     Args:
         carve_dir: Directory containing carved ``*.pdb`` files.
-        output_db: Output FoldComp database path.
-        threads: Thread count passed to ``foldcomp compress -t``.
+        output_archive: Output ``.tar.gz`` path (e.g. ``carved_pdbs.tar.gz``).
     """
-    if not any(carve_dir.glob("*.pdb")):
+    pdb_files = sorted(carve_dir.glob("*.pdb"))
+    if not pdb_files:
         logger.warning("No PDB files found in %s; skipping compression.",
                        carve_dir)
         return
 
-    foldcomp_bin = FOLDCOMP_PATH
-    if not foldcomp_bin.exists():
-        raise FileNotFoundError(
-            f"FoldComp binary not found at {foldcomp_bin}. "
-            "Run `python setup.py build_binaries --inplace` before using "
-            "--compress-structures.")
+    output_archive = pathlib.Path(output_archive)
+    output_archive.parent.mkdir(parents=True, exist_ok=True)
 
     logger.info(
-        "Starting FoldComp compress of %s → %s with %d thread(s)...",
+        "Starting tar.gz compression of %d PDB file(s) from %s → %s ...",
+        len(pdb_files),
         carve_dir,
-        output_db,
-        threads,
+        output_archive,
     )
-    subprocess.run(
-        [
-            str(foldcomp_bin),
-            "compress",
-            "-t",
-            str(threads),
-            "-d",
-            "-y",
-            str(carve_dir),
-            str(output_db),
-        ],
-        check=True,
-    )
-    logger.info("FoldComp compress finished; removing individual PDB files...")
-    pdb_files = list(carve_dir.glob("*.pdb"))
+    with tarfile.open(output_archive, "w:gz") as archive:
+        for pdb_file in pdb_files:
+            archive.add(pdb_file, arcname=pdb_file.name)
+
+    logger.info("tar.gz compression finished; removing individual PDB files...")
     for pdb_file in pdb_files:
         pdb_file.unlink()
     if carve_dir.exists() and not any(carve_dir.iterdir()):
@@ -997,7 +1033,9 @@ def compress_carved_structures(carve_dir: pathlib.Path,
 
     logger.info(
         "Compressed carved structures to %s and removed %d individual PDB file(s).",
-        output_db, len(pdb_files))
+        output_archive,
+        len(pdb_files),
+    )
 
 
 def calculate_contact_map(coordinates: np.ndarray,

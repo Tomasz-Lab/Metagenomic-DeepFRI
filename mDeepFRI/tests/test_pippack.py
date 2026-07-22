@@ -61,7 +61,9 @@ class TestNonstandardReinsertion(unittest.TestCase):
         self.assertEqual(counts["UNK"], 1)
 
         # Simulate PIPPack dropping UNK and adding a side-chain atom on ALA.
+        # PIPPack's to_pdb wraps atoms in MODEL / ENDMDL / END.
         packed = "\n".join([
+            "MODEL     1",
             "ATOM      1  N   ALA A   1       0.000   0.000   0.000  1.00  0.00           N",
             "ATOM      2  CA  ALA A   1       1.000   0.000   0.000  1.00  0.00           C",
             "ATOM      3  C   ALA A   1       2.000   0.000   0.000  1.00  0.00           C",
@@ -71,6 +73,8 @@ class TestNonstandardReinsertion(unittest.TestCase):
             "ATOM      7  CA  GLY A   3      21.000   0.000   0.000  1.00  0.00           C",
             "ATOM      8  C   GLY A   3      22.000   0.000   0.000  1.00  0.00           C",
             "ATOM      9  O   GLY A   3      23.000   0.000   0.000  1.00  0.00           O",
+            "TER      10      GLY A   3",
+            "ENDMDL",
             "END",
         ]) + "\n"
 
@@ -85,6 +89,19 @@ class TestNonstandardReinsertion(unittest.TestCase):
             if line.startswith(("ATOM", "HETATM")) and line[12:16].strip() == "CA":
                 ca_order.append(line[17:20].strip())
         self.assertEqual(ca_order, ["ALA", "UNK", "GLY"])
+
+        # Valid PDB order: MODEL before atoms; TER / ENDMDL / END after.
+        records = [
+            line[:6].strip() for line in merged.splitlines() if line.strip()
+        ]
+        self.assertEqual(records[0], "MODEL")
+        self.assertNotIn("MODEL", records[1:])
+        first_atom = next(i for i, r in enumerate(records) if r in ("ATOM", "HETATM"))
+        last_atom = max(i for i, r in enumerate(records) if r in ("ATOM", "HETATM"))
+        self.assertLess(records.index("MODEL"), first_atom)
+        self.assertGreater(records.index("TER"), last_atom)
+        self.assertGreater(records.index("ENDMDL"), records.index("TER"))
+        self.assertEqual(records[-1], "END")
 
 
 class TestPackCarvedStructures(unittest.TestCase):

@@ -65,6 +65,32 @@ def resolve_pippack_python(pippack_python: Optional[str] = None) -> str:
     return shutil.which("python") or sys.executable
 
 
+def probe_pippack_torch(pippack_python: Optional[str] = None) -> str:
+    """
+    Verify the PIPPack interpreter can import torch.
+
+    Returns:
+        Absolute path of the probed Python interpreter.
+
+    Raises:
+        PippackConfigError: If torch cannot be imported.
+    """
+    python_bin = resolve_pippack_python(pippack_python)
+    probe = subprocess.run(
+        [python_bin, "-c", "import torch; print(torch.__version__)"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if probe.returncode != 0:
+        raise PippackConfigError(
+            f"PIPPack Python interpreter cannot import torch: {python_bin}\n"
+            f"{(probe.stderr or probe.stdout).strip()}\n"
+            "Pass --pippack-python pointing at the PIPPack conda/env "
+            "interpreter (or set PIPPACK_PYTHON).")
+    return python_bin
+
+
 def _default_worker_count(device: str,
                           threads: int,
                           pippack_workers: Optional[int]) -> int:
@@ -146,18 +172,31 @@ def reinsert_nonstandard_backbone(
     Merge PIPPack output with stashed non-standard backbone residues.
 
     Residues are emitted in ``(chain_id, res_id)`` order. Atom serial numbers
-    are renumbered sequentially. Trailer records (TER/END/MODEL) from the
-    packed PDB are preserved at the end.
+    are renumbered sequentially.
+
+    Preserves a valid PDB record order from the PIPPack template::
+
+        MODEL (optional)
+        ATOM / HETATM ...
+        TER
+        ENDMDL (optional)
+        END
     """
     if not stashed:
         return packed_text
 
+    header: List[str] = []
     packed_groups: Dict[ResidueKey, List[str]] = {}
     trailer: List[str] = []
+    seen_atom = False
     for line in packed_text.splitlines():
         if line.startswith(("ATOM", "HETATM")):
+            seen_atom = True
             key = (_pdb_chain_id(line), _pdb_res_id(line))
             packed_groups.setdefault(key, []).append(line)
+        elif not seen_atom:
+            # MODEL and any other pre-ATOM records stay at the top.
+            header.append(line)
         else:
             trailer.append(line)
 
@@ -170,20 +209,28 @@ def reinsert_nonstandard_backbone(
 
     all_keys = sorted(set(packed_groups) | set(stashed),
                       key=lambda item: (item[0], item[1]))
-    out_lines: List[str] = []
+    out_lines: List[str] = [line for line in header if line.strip()]
     serial = 1
+    last_res_name = ""
+    last_chain = "A"
+    last_res_id = 0
     for key in all_keys:
         residue_lines = packed_groups.get(key) or stashed[key]
         for line in residue_lines:
             out_lines.append(_renumber_atom_serial(line, serial))
             serial += 1
+            last_res_name = _pdb_res_name(line)
+            last_chain = _pdb_chain_id(line)
+            last_res_id = _pdb_res_id(line)
 
     for line in trailer:
         if not line.strip():
             continue
         if line.startswith("TER"):
-            # Minimal TER; serial continues PDB convention after last atom.
-            out_lines.append(f"TER   {serial:5d}")
+            # Keep TER after atoms; refresh serial / terminal residue identity.
+            out_lines.append(
+                f"TER   {serial:5d}      {last_res_name:>3} "
+                f"{last_chain}{last_res_id:4d}")
             serial += 1
         else:
             out_lines.append(line)
@@ -338,27 +385,12 @@ def pack_carved_structures(
         return 0, 0
 
     pippack_root = resolve_pippack_dir(pippack_dir)
-    python_bin = resolve_pippack_python(pippack_python)
+    python_bin = probe_pippack_torch(pippack_python)
     weights_path = pippack_root / "model_weights"
     if not (weights_path / f"{model_name}_ckpt.pt").exists():
         raise PippackConfigError(
             f"PIPPack checkpoint {model_name}_ckpt.pt not found in {weights_path}."
         )
-
-    # Fail fast if the chosen interpreter cannot import torch (common when
-    # --pippack-python is omitted and the mDeepFRI env is used by mistake).
-    probe = subprocess.run(
-        [python_bin, "-c", "import torch; print(torch.__version__)"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if probe.returncode != 0:
-        raise PippackConfigError(
-            f"PIPPack Python interpreter cannot import torch: {python_bin}\n"
-            f"{(probe.stderr or probe.stdout).strip()}\n"
-            "Pass --pippack-python pointing at the PIPPack conda/env "
-            "interpreter (or set PIPPACK_PYTHON).")
 
     if device not in {"cpu", "gpu"}:
         raise ValueError(f"Unsupported PIPPack device: {device!r}")
