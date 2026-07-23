@@ -502,6 +502,11 @@ def carve_aligned_pdb(alignment: AlignmentResult,
         residue_atoms.chain_id[:] = np.full(len(residue_atoms),
                                             output_chain,
                                             dtype=residue_atoms.chain_id.dtype)
+        # Drop template insertion codes. Query numbering is gap-free in SEQRES
+        # space; leaking PDB icodes makes PIPPack shift subsequent residue_index
+        # values (it treats icodes as offsets).
+        if hasattr(residue_atoms, "ins_code"):
+            residue_atoms.ins_code[:] = ""
         carved_groups.append(residue_atoms)
 
     if incomplete:

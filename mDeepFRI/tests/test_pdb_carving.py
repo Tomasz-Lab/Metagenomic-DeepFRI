@@ -223,6 +223,42 @@ class TestCarveAlignedPdb(unittest.TestCase):
             any(res_id == 2 and "O" in missing
                 for res_id, missing in validation.incomplete_residues))
 
+    def test_template_insertion_codes_are_cleared(self):
+        """Template PDB icodes must not leak into carved query numbering."""
+        mini_pdb, target_sequence = self._mini_structure_string(3)
+        # Inject insertion codes on residue 2 atoms (column 27).
+        lines = []
+        for line in mini_pdb.splitlines():
+            if line.startswith("ATOM") and int(line[22:26]) == 2:
+                padded = line.ljust(80)
+                line = f"{padded[:26]}A{padded[27:]}".rstrip()
+            lines.append(line)
+        icode_pdb = "\n".join(lines) + "\n"
+
+        alignment = self._make_alignment(
+            query_sequence=target_sequence,
+            target_sequence=target_sequence,
+            gapped_query=target_sequence,
+            gapped_target=target_sequence,
+            structure_path=str(self.structure_path),
+            alignment_string="MMM",
+        )
+        pdb_content = carve_aligned_pdb(alignment,
+                                        icode_pdb,
+                                        filetype="pdb",
+                                        chain="A")
+        icodes = {
+            line[26]
+            for line in pdb_content.splitlines()
+            if line.startswith("ATOM")
+        }
+        self.assertEqual(icodes, {" "})
+        ca_ids = [
+            int(line[22:26]) for line in pdb_content.splitlines()
+            if line.startswith("ATOM") and line[12:16].strip() == "CA"
+        ]
+        self.assertEqual(ca_ids, [1, 2, 3])
+
 
 class TestBackboneValidation(unittest.TestCase):
     def setUp(self):
