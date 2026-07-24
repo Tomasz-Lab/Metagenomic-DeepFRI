@@ -330,6 +330,9 @@ template structure selected by MMseqs2/PyOpal alignment (or from
 - Templates with CA-only / incomplete backbone residues are still carved
   (available atoms kept) with a warning; packing is **skipped** and the
   partial backbone PDB is kept.
+- A summary of query insertion gaps is written to
+  `{output_path}/query_insertions.tsv` (runs, residue counts, mean/max run
+  length).
 
 This is different from `--save-structures`, which saves the raw template
 structures used as alignment targets.

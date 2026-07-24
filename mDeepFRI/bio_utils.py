@@ -280,6 +280,93 @@ def build_target_to_query_map(gapped_query: str,
     return target_to_query
 
 
+class QueryInsertionStats(NamedTuple):
+    """Query-side insertion runs (SEQRES-only residues vs the template)."""
+
+    query_insertion_runs: int
+    query_insertion_residues: int
+    mean_query_insertion_length: float
+    max_query_insertion_length: int
+
+
+QUERY_INSERTION_HEADER = [
+    "query_id",
+    "seq_length",
+    "target_id",
+    "query_insertion_runs",
+    "query_insertion_residues",
+    "mean_query_insertion_length",
+    "max_query_insertion_length",
+]
+
+
+def summarize_query_insertions(gapped_query: str,
+                               gapped_target: str) -> QueryInsertionStats:
+    """
+    Summarize contiguous query insertions (gaps in the template alignment).
+
+    A query insertion column is one where the query has an amino acid and the
+    target has ``-``. Contiguous stretches of such columns form insertion runs
+    (residues that appear in SEQRES only in carved PDBs).
+    """
+    if len(gapped_query) != len(gapped_target):
+        raise ValueError("Gapped query and target must have equal length.")
+
+    run_lengths: List[int] = []
+    current = 0
+    for q_char, t_char in zip(gapped_query, gapped_target):
+        if q_char != "-" and t_char == "-":
+            current += 1
+        elif current:
+            run_lengths.append(current)
+            current = 0
+    if current:
+        run_lengths.append(current)
+
+    n_runs = len(run_lengths)
+    n_residues = sum(run_lengths)
+    mean_len = (n_residues / n_runs) if n_runs else 0.0
+    max_len = max(run_lengths) if run_lengths else 0
+    return QueryInsertionStats(
+        query_insertion_runs=n_runs,
+        query_insertion_residues=n_residues,
+        mean_query_insertion_length=mean_len,
+        max_query_insertion_length=max_len,
+    )
+
+
+def write_query_insertion_summary(
+        alignments: List[AlignmentResult],
+        output_file: pathlib.Path,
+) -> int:
+    """
+    Write a TSV summarizing query insertion gaps for carved alignments.
+
+    Returns:
+        Number of rows written (one per alignment).
+    """
+    import csv
+
+    output_file = pathlib.Path(output_file)
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_file, "w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, delimiter="\t")
+        writer.writerow(QUERY_INSERTION_HEADER)
+        for alignment in alignments:
+            stats = summarize_query_insertions(alignment.gapped_sequence,
+                                               alignment.gapped_target)
+            writer.writerow([
+                alignment.query_name,
+                len(alignment.query_sequence or ""),
+                alignment.target_name,
+                stats.query_insertion_runs,
+                stats.query_insertion_residues,
+                f"{stats.mean_query_insertion_length:.4f}",
+                stats.max_query_insertion_length,
+            ])
+    return len(alignments)
+
+
 def chain_id_from_filename(filename: str) -> Optional[str]:
     """
     Infer a chain identifier from a PDB-style template filename suffix.

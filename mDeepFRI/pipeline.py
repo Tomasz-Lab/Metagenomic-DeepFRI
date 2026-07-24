@@ -40,7 +40,8 @@ from mDeepFRI.bio_utils import (build_align_contact_map,
                                 compress_carved_structures,
                                 extract_residue_sequence,
                                 extract_residues_coordinates,
-                                write_carved_pdbs, _init_parallel_worker)
+                                write_carved_pdbs, write_query_insertion_summary,
+                                _init_parallel_worker)
 from mDeepFRI.database import Database, build_database
 from mDeepFRI.mmseqs import MMseqsResult, QueryFile
 from mDeepFRI.pdb import create_pdb_mmseqs, extract_calpha_coords
@@ -1046,6 +1047,7 @@ def predict_protein_function(
 
     if carve_pdbs:
         carve_dir = output_path / "carved_pdbs"
+        insertion_summary = output_path / "query_insertions.tsv"
         logger.info("=" * 60)
         logger.info("STEP: Carve backbone PDBs (N/CA/C/O) → %s", carve_dir)
         logger.info("=" * 60)
@@ -1055,10 +1057,16 @@ def predict_protein_function(
                                          carve_dir,
                                          threads=threads,
                                          release_contact_maps=skip_prediction)
+        write_query_insertion_summary(
+            [aln for aln, _ in aligned_cmaps], insertion_summary)
         step_timings.append(("Carve backbone PDBs",
                              time.perf_counter() - step_t0))
-        logger.info("STEP DONE: Carving finished (%d PDB file(s)).",
-                    carved_count)
+        logger.info(
+            "STEP DONE: Carving finished (%d PDB file(s)); "
+            "query insertion summary → %s.",
+            carved_count,
+            insertion_summary,
+        )
 
         if carved_count > 0:
             logger.info("=" * 60)

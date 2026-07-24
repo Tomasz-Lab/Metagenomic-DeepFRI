@@ -35,6 +35,56 @@ class TestBuildTargetToQueryMap(unittest.TestCase):
         self.assertEqual(result, [0, 2])
 
 
+class TestQueryInsertionSummary(unittest.TestCase):
+    def test_summarize_insertion_runs(self):
+        from mDeepFRI.bio_utils import summarize_query_insertions
+
+        # Two runs: length 1 (B) and length 2 (EF); D is matched.
+        stats = summarize_query_insertions("ABCDEF", "A-CD--")
+        self.assertEqual(stats.query_insertion_runs, 2)
+        self.assertEqual(stats.query_insertion_residues, 3)
+        self.assertAlmostEqual(stats.mean_query_insertion_length, 1.5)
+        self.assertEqual(stats.max_query_insertion_length, 2)
+
+    def test_summarize_no_insertions(self):
+        from mDeepFRI.bio_utils import summarize_query_insertions
+
+        stats = summarize_query_insertions("AC", "AC")
+        self.assertEqual(stats.query_insertion_runs, 0)
+        self.assertEqual(stats.query_insertion_residues, 0)
+        self.assertEqual(stats.mean_query_insertion_length, 0.0)
+        self.assertEqual(stats.max_query_insertion_length, 0)
+
+    def test_write_query_insertion_summary_tsv(self):
+        from mDeepFRI.bio_utils import (QUERY_INSERTION_HEADER,
+                                        write_query_insertion_summary)
+
+        alignment = AlignmentResult(
+            query_name="q1",
+            query_sequence="ABCDEF",
+            target_name="t1",
+            target_sequence="ACD",
+            alignment="MDMMDD",
+        )
+        alignment.gapped_sequence = "ABCDEF"
+        alignment.gapped_target = "A-CD--"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir) / "query_insertions.tsv"
+            written = write_query_insertion_summary([alignment], out)
+            self.assertEqual(written, 1)
+            lines = out.read_text(encoding="utf-8").strip().splitlines()
+            self.assertEqual(lines[0].split("\t"), QUERY_INSERTION_HEADER)
+            cols = lines[1].split("\t")
+            self.assertEqual(cols[0], "q1")
+            self.assertEqual(cols[1], "6")
+            self.assertEqual(cols[2], "t1")
+            self.assertEqual(cols[3], "2")
+            self.assertEqual(cols[4], "3")
+            self.assertEqual(cols[5], "1.5000")
+            self.assertEqual(cols[6], "2")
+
+
 class TestChainResolution(unittest.TestCase):
     def test_chain_id_from_filename_uses_last_suffix_character(self):
         self.assertEqual(chain_id_from_filename("5aa0_BZ.pdb"), "Z")
