@@ -157,6 +157,29 @@ class TestPackCarvedStructures(unittest.TestCase):
         (weights / "pippack_model_1_ckpt.pt").write_bytes(b"x")
         (weights / "pippack_model_1_config.pickle").write_bytes(b"x")
 
+    def test_parallel_backbone_validation_matches_serial(self):
+        from mDeepFRI.pippack import _run_backbone_validation
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            carve_dir = Path(temp_dir)
+            good_a = carve_dir / "a_good.pdb"
+            bad = carve_dir / "b_bad.pdb"
+            good_c = carve_dir / "c_good.pdb"
+            self._write_backbone_pdb(good_a)
+            self._write_ca_only_pdb(bad)
+            self._write_backbone_pdb(good_c)
+            pdb_files = sorted(carve_dir.glob("*.pdb"))
+
+            serial = _run_backbone_validation(pdb_files, threads=1)
+            parallel = _run_backbone_validation(pdb_files, threads=3)
+
+            self.assertEqual([p.name for p in serial[0]],
+                             [p.name for p in parallel[0]])
+            self.assertEqual(serial[4], parallel[4])
+            self.assertEqual(set(serial[1]), set(parallel[1]))
+            self.assertEqual(serial[4], 1)
+            self.assertEqual(len(serial[0]), 2)
+
     @patch("mDeepFRI.pippack.subprocess.run")
     @patch("mDeepFRI.pippack._run_worker")
     def test_pack_skips_incomplete_and_reattaches_header(self, mock_run_worker,

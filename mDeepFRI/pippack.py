@@ -9,16 +9,18 @@ from __future__ import annotations
 
 import json
 import logging
+import multiprocessing
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
-from mDeepFRI.bio_utils import (BACKBONE_ATOM_NAMES, extract_pdb_header,
+from mDeepFRI.bio_utils import (BACKBONE_ATOM_NAMES, BackboneValidationResult,
+                                _init_parallel_worker, extract_pdb_header,
                                 reattach_pdb_header, validate_backbone_pdb)
 
 logger = logging.getLogger(__name__)
@@ -104,6 +106,79 @@ def _default_worker_count(device: str,
 def _shard_paths(paths: Sequence[Path], worker_count: int) -> List[List[Path]]:
     shards = [list(paths[i::worker_count]) for i in range(worker_count)]
     return [shard for shard in shards if shard]
+
+
+class _PrepResult(NamedTuple):
+    path: Path
+    ok: bool
+    validation: BackboneValidationResult
+    header: str
+    stashed: Dict[ResidueKey, List[str]]
+    stash_counts: Dict[str, int]
+
+
+def _validate_and_prepare_pdb(pdb_path: Path) -> _PrepResult:
+    """Validate one carved PDB and prepare header/stash data if packable."""
+    pdb_text = pdb_path.read_text(encoding="utf-8")
+    validation = validate_backbone_pdb(pdb_text)
+    if not validation.ok:
+        return _PrepResult(pdb_path, False, validation, "", {}, {})
+    header = extract_pdb_header(pdb_text)
+    stashed, stash_counts = stash_nonstandard_backbone(pdb_text)
+    return _PrepResult(pdb_path, True, validation, header, stashed, stash_counts)
+
+
+def _run_backbone_validation(
+        pdb_files: Sequence[Path],
+        threads: int,
+) -> Tuple[List[Path], Dict[str, str], Dict[str, Dict[ResidueKey, List[str]]],
+           Dict[str, Dict[str, int]], int]:
+    """
+    Validate carved PDBs in parallel and collect packing metadata.
+
+    Uses ``threads`` worker processes (same pool size as carving). Returns
+    packable paths in the original ``pdb_files`` order.
+    """
+    total = len(pdb_files)
+    worker_count = max(1, min(threads, total))
+    logger.info(
+        "Validating backbone completeness for %d carved PDB(s) "
+        "using %d worker process(es)...",
+        total,
+        worker_count,
+    )
+
+    if worker_count == 1:
+        prep_results = [_validate_and_prepare_pdb(path) for path in pdb_files]
+    else:
+        chunksize = max(1, total // (worker_count * 4))
+        ctx = multiprocessing.get_context("fork")
+        with ProcessPoolExecutor(max_workers=worker_count,
+                                 mp_context=ctx,
+                                 initializer=_init_parallel_worker) as executor:
+            prep_results = list(
+                executor.map(_validate_and_prepare_pdb,
+                             pdb_files,
+                             chunksize=chunksize))
+
+    packable: List[Path] = []
+    headers: Dict[str, str] = {}
+    stashes: Dict[str, Dict[ResidueKey, List[str]]] = {}
+    stash_counts_by_name: Dict[str, Dict[str, int]] = {}
+    skipped = 0
+    for result in prep_results:
+        if not result.ok:
+            skipped += 1
+            _log_incomplete_backbone(result.path.stem, result.validation)
+            continue
+        headers[result.path.stem] = result.header
+        stashes[result.path.stem] = result.stashed
+        stash_counts_by_name[result.path.stem] = result.stash_counts
+        packable.append(result.path)
+
+    logger.info("  Backbone validation done: %d packable, %d skipped.",
+                len(packable), skipped)
+    return packable, headers, stashes, stash_counts_by_name, skipped
 
 
 def _count_ca_residues(pdb_text: str) -> int:
@@ -398,29 +473,8 @@ def pack_carved_structures(
     logger.info("Using PIPPack python=%s device=%s model=%s", python_bin,
                 device, model_name)
 
-    logger.info("Validating backbone completeness for %d carved PDB(s)...",
-                len(pdb_files))
-    packable: List[Path] = []
-    headers = {}
-    stashes: Dict[str, Dict[ResidueKey, List[str]]] = {}
-    stash_counts_by_name: Dict[str, Dict[str, int]] = {}
-    skipped = 0
-    for index, pdb_path in enumerate(pdb_files, start=1):
-        pdb_text = pdb_path.read_text(encoding="utf-8")
-        validation = validate_backbone_pdb(pdb_text)
-        if not validation.ok:
-            skipped += 1
-            _log_incomplete_backbone(pdb_path.stem, validation)
-            continue
-        headers[pdb_path.stem] = extract_pdb_header(pdb_text)
-        stashed, stash_counts = stash_nonstandard_backbone(pdb_text)
-        stashes[pdb_path.stem] = stashed
-        stash_counts_by_name[pdb_path.stem] = stash_counts
-        packable.append(pdb_path)
-        if index % 1000 == 0 or index == len(pdb_files):
-            logger.info("  Backbone validation progress: %d/%d "
-                        "(%d packable, %d skipped).",
-                        index, len(pdb_files), len(packable), skipped)
+    packable, headers, stashes, stash_counts_by_name, skipped = (
+        _run_backbone_validation(pdb_files, threads))
 
     if not packable:
         logger.warning(
