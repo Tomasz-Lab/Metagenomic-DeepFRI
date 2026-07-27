@@ -165,14 +165,17 @@ To download models run command:
 mDeepFRI get-models --output path/to/weights/folder -v {1.0 or 1.1}
 ```
 
-### 3. Predict protein function & capture log
+### 3. Predict protein function
 
 ```{code-block} bash
 mDeepFRI predict-function -i /path/to/protein/sequences \
 -d /path/to/foldcomp/database/ \
 -w /path/to/deepfri/weights/folder \
--o /output_path > log.txt
+-o /output_path
 ```
+
+Logs are written to the terminal and saved automatically to
+`/output_path/mDeepFRI.log`.
 
 Other available parameters can be found upon command `mDeepFRI --help`.
 
@@ -182,19 +185,21 @@ The output folder will contain several files from different stages of the pipeli
 
 ### Main Output Files
 
-1. **`results.tsv`** - Primary output file containing
+1. **`mDeepFRI.log`** - Full run log (also printed to the terminal).
+
+2. **`results.tsv`** - Primary output file containing
 all functional predictions from the DeepFRI model.
 
-2. **`alignment_summary.tsv`** - Summary of alignment statistics for
+3. **`alignment_summary.tsv`** - Summary of alignment statistics for
    each query protein, showing which queries were
    successfully aligned to database structures.
 
-3. **`database_search/`** - Directory containing individual search results for
+4. **`database_search/`** - Directory containing individual search results for
    each database queried:
    - `{database_name}_results.tsv` - One file per database searched
      (e.g., `pdb100_230517_results.tsv`, `afdb_swissprot_v4_results.tsv`)
 
-4. **`prediction_matrix_*.tsv`** - Detailed prediction matrices for each
+5. **`prediction_matrix_*.tsv`** - Detailed prediction matrices for each
    ontology mode:
    - `prediction_matrix_bp.tsv` - Biological Process predictions
    - `prediction_matrix_cc.tsv` - Cellular Component predictions
@@ -204,7 +209,7 @@ all functional predictions from the DeepFRI model.
    These files contain raw prediction scores for every protein × GO term
    combination and can be very large (>50MB).
 
-5. **`query.mmseqsDB`** + associated index files - MMseqs2 database created
+6. **`query.mmseqsDB`** + associated index files - MMseqs2 database created
    from input query sequences.
 
 ### Primary Output Format (`results.tsv`)

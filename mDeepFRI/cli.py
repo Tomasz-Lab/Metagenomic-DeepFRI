@@ -43,17 +43,46 @@ from mDeepFRI.utils import download_model_weights, generate_config_json
 logger = logging.getLogger(__name__)
 
 
+LOG_FORMAT = (
+    "[%(asctime)s] %(module)s.%(funcName)s %(levelname)s: %(message)s")
+LOG_DATEFMT = "%Y-%m-%d %H:%M:%S"
+LOG_FILENAME = "mDeepFRI.log"
+
+
 def setup_logging(debug: bool = False):
     """Configures the root logger for the application."""
     log_level = logging.DEBUG if debug else logging.INFO
     logging.basicConfig(
         level=log_level,
-        format=
-        "[%(asctime)s] %(module)s.%(funcName)s %(levelname)s: %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
+        format=LOG_FORMAT,
+        datefmt=LOG_DATEFMT,
         handlers=[logging.StreamHandler(sys.stdout)],
         force=True,  # Override any existing configuration
     )
+
+
+def add_file_logging(output_dir: Path):
+    """Attach a FileHandler writing to ``output_dir/mDeepFRI.log``.
+
+    Logs continue to appear on stdout. Idempotent if the same file handler
+    is already attached.
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    log_path = output_dir / LOG_FILENAME
+    resolved = str(log_path.resolve())
+
+    root = logging.getLogger()
+    for handler in root.handlers:
+        if (isinstance(handler, logging.FileHandler)
+                and getattr(handler, "baseFilename", None) == resolved):
+            return
+
+    file_handler = logging.FileHandler(log_path)
+    file_handler.setFormatter(
+        logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT))
+    root.addHandler(file_handler)
+    logger.info(f"Logging to {log_path}")
 
 
 def log_command_params(ctx: click.Context):
@@ -260,9 +289,10 @@ def main(debug):
 def get_models(output, version):
     """Download model weights for mDeepFRI."""
 
-    logger.info("Downloading DeepFRI models.")
     output_path = Path(output)
     output_path.mkdir(parents=True, exist_ok=True)
+    add_file_logging(output_path)
+    logger.info("Downloading DeepFRI models.")
     download_model_weights(output_path, version)
     generate_config_json(output_path, version)
     logger.info(f"DeepFRI models v{version} downloaded to {output_path}.")
@@ -312,6 +342,9 @@ def search_databases(ctx, input, output, db_path, mmseqs_sensitivity,
     MMseqs2. Based on the thresholds from https://doi.org/10.1038/s41586-023-06510-w.
     """
 
+    output_path = Path(output)
+    output_path.mkdir(parents=True, exist_ok=True)
+    add_file_logging(output_path)
     # write command parameters to log
     log_command_params(ctx)
 
@@ -320,7 +353,7 @@ def search_databases(ctx, input, output, db_path, mmseqs_sensitivity,
                                  max_length=max_length)
     hierarchical_database_search(query_file=query_file,
                                  databases=db_path,
-                                 output_path=output,
+                                 output_path=output_path,
                                  mmseqs_sensitivity=mmseqs_sensitivity,
                                  min_seq_len=min_length,
                                  max_seq_len=max_length,
@@ -577,6 +610,7 @@ def predict_function(ctx, input, db_path, weights, output, processing_modes,
 
     output_path = Path(output)
     output_path.mkdir(parents=True, exist_ok=True)
+    add_file_logging(output_path)
     # write command parameters to log
     log_command_params(ctx)
 
@@ -676,6 +710,7 @@ def predict_function(ctx, input, db_path, weights, output, processing_modes,
 def make_cmaps(input_dir, output_dir, threshold):
     "Compute CA contact maps for all PDB/mmCIF files in a directory."
     os.makedirs(output_dir, exist_ok=True)
+    add_file_logging(Path(output_dir))
     for fname in os.listdir(input_dir):
         if not fname.endswith((".pdb", ".cif")):
             continue

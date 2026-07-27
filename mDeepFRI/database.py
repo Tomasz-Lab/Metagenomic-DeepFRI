@@ -14,7 +14,6 @@ Functions:
 """
 
 import logging
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -22,14 +21,6 @@ from typing import Optional
 from mDeepFRI.mmseqs import _createdb, _createindex, extract_fasta_foldcomp
 
 logger = logging.getLogger(__name__)
-handler = logging.StreamHandler(sys.stdout)
-logger.propagate = False
-formatter = logging.Formatter(
-    '[%(asctime)s] %(module)s.%(funcName)s %(levelname)s: %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S')
-handler.setFormatter(formatter)
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
 
 
 @dataclass

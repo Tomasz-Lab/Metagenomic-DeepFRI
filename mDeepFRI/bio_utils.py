@@ -25,7 +25,6 @@ import logging
 import multiprocessing
 import os
 import pathlib
-import sys
 import tarfile
 from concurrent.futures import ProcessPoolExecutor
 from io import StringIO
@@ -42,14 +41,6 @@ from mDeepFRI.alignment import AlignmentResult
 from mDeepFRI.contact_map_utils import align_contact_map, pairwise_sqeuclidean
 
 logger = logging.getLogger(__name__)
-handler = logging.StreamHandler(sys.stdout)
-logger.propagate = False
-formatter = logging.Formatter(
-    '[%(asctime)s] %(module)s.%(funcName)s %(levelname)s: %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S')
-handler.setFormatter(formatter)
-logger.addHandler(handler)
-logger.setLevel(logging.INFO)
 
 
 def _pin_blas_threads_per_process() -> None:
