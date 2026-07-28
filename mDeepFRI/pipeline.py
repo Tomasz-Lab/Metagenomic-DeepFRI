@@ -26,7 +26,7 @@ import pathlib
 import pickle
 import sys
 import time
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from functools import partial
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -375,7 +375,8 @@ def _resolve_structure_path(structure_ref: str,
     return candidates[0]
 
 
-def _load_custom_mapping_file(mapping_path: pathlib.Path) -> Dict[str, str]:
+def _load_custom_mapping_file(mapping_path: pathlib.Path,
+                              threads: int = 1) -> Dict[str, str]:
     mapping: Dict[str, str] = {}
 
     with open(mapping_path, "r", encoding="utf-8") as f:
@@ -397,14 +398,26 @@ def _load_custom_mapping_file(mapping_path: pathlib.Path) -> Dict[str, str]:
             path_col = 1
 
         reader = csv.reader(f, delimiter=delimiter)
+        protein_ids = []
+        structure_refs = []
         for row in reader:
             if len(row) <= max(query_col, path_col):
                 logger.warning(f"Skipping malformed mapping line: {row}")
                 continue
-            protein_id = row[query_col].strip()
-            structure_ref = row[path_col].strip()
-            mapping[protein_id] = str(
-                _resolve_structure_path(structure_ref, mapping_path))
+            protein_ids.append(row[query_col].strip())
+            structure_refs.append(row[path_col].strip())
+
+    # _resolve_structure_path() does a filesystem stat() per row. On a
+    # parallel/network filesystem that's a blocking round-trip, so this
+    # loop -- not CSV parsing -- is what benefits from a thread pool
+    # (I/O-bound, GIL released during the syscall).
+    resolver = partial(_resolve_structure_path, mapping_path=mapping_path)
+    with ThreadPoolExecutor(max_workers=max(1, threads)) as executor:
+        resolved_paths = executor.map(resolver, structure_refs)
+        mapping = {
+            protein_id: str(resolved_path)
+            for protein_id, resolved_path in zip(protein_ids, resolved_paths)
+        }
 
     return mapping
 
@@ -582,7 +595,7 @@ def load_custom_alignments_from_mapping(
     if not mapping_path.exists():
         raise FileNotFoundError(f"Mapping file not found: {mapping_file}")
 
-    mapping = _load_custom_mapping_file(mapping_path)
+    mapping = _load_custom_mapping_file(mapping_path, threads=threads)
 
     logger.info(f"Loaded {len(mapping)} protein-to-structure mappings.")
 
