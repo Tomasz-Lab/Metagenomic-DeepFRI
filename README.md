@@ -491,4 +491,4 @@ in the [Keep a Changelog](http://keepachangelog.com/en/1.0.0/) format.
 
 ## ⚖️ License
 
-This library is provided under the GPL-3.0 license.
+This library is provided under the BSD 3-Clause License.
