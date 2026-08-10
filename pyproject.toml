@@ -70,7 +70,7 @@ include-package-data = true
 include = ["mDeepFRI", "mDeepFRI.*"]
 
 [tool.setuptools.package-data]
-"mDeepFRI" = ["assets/*.pkl"]
+"mDeepFRI" = ["assets/*.pkl", "assets/*.tsv"]
 
 [tool.ruff]
 line-length = 120

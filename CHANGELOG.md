@@ -46,6 +46,8 @@ did not match the shipped `LICENSE` file.
 - GCN/CNN output vocabulary mismatch producing misaligned GO term names
 - spurious empty column in `results.tsv` - rows carried one more field than the header
 - unparsable `pyproject.toml` (missing separator in `dependencies`)
+- `go2cog_USECLO_ALL.tsv` is now shipped in the distribution - the asset glob only
+matched `*.pkl`, so COG/IC columns stayed empty on installs from PyPI
 - Information Content parsed as `float`, with row length guarding
 
 ## [1.1.10] - 2026-01-16
