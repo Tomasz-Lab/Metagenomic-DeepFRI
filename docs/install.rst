@@ -28,7 +28,7 @@ For development or the latest features:
 
 .. code:: console
 
-    git clone https://github.com/bioinf-mcb/Metagenomic-DeepFRI.git
+    git clone https://github.com/Tomasz-Lab/Metagenomic-DeepFRI.git
     cd Metagenomic-DeepFRI
     pip install -e .
 

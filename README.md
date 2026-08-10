@@ -1,15 +1,15 @@
 <!-- markdownlint-disable-file MD024 MD013 -->
-# 🍳 Metagenomic-DeepFRI [![Stars](https://img.shields.io/github/stars/bioinf-MCB/Metagenomic-DeepFRI.svg?style=social&maxAge=3600&label=Star)](https://github.com/bioinf-MCB/Metagenomic-DeepFRI/stargazers)
+# 🍳 Metagenomic-DeepFRI [![Stars](https://img.shields.io/github/stars/Tomasz-Lab/Metagenomic-DeepFRI.svg?style=social&maxAge=3600&label=Star)](https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/stargazers)
 
 [![License](https://img.shields.io/badge/license-BSD%203--Clause-blue.svg?style=flat-square&maxAge=2678400)](https://choosealicense.com/licenses/bsd-3-clause/)
 [![PyPI](https://img.shields.io/pypi/v/mdeepfri.svg?style=flat-square&maxAge=3600&logo=PyPI)](https://pypi.org/project/mdeepfri)
 [![Wheel](https://img.shields.io/pypi/wheel/mdeepfri.svg?style=flat-square&maxAge=3600)](https://pypi.org/project/mdeepfri/#files)
 [![Python Versions](https://img.shields.io/pypi/pyversions/mdeepfri.svg?style=flat-square&maxAge=600&logo=python)](https://pypi.org/project/mdeepfri/#files)
 [![Python Implementations](https://img.shields.io/pypi/implementation/mdeepfri.svg?style=flat-square&maxAge=600&label=impl)](https://pypi.org/project/mdeepfri/#files)
-[![Source](https://img.shields.io/badge/source-GitHub-303030.svg?maxAge=2678400&style=flat-square)](https://github.com/bioinf-MCB/Metagenomic-DeepFRI/)
-[![GitHub issues](https://img.shields.io/github/issues/bioinf-MCB/Metagenomic-DeepFRI.svg?style=flat-square&maxAge=600)](https://github.com/bioinf-MCB/Metagenomic-DeepFRI//issues)
+[![Source](https://img.shields.io/badge/source-GitHub-303030.svg?maxAge=2678400&style=flat-square)](https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/)
+[![GitHub issues](https://img.shields.io/github/issues/Tomasz-Lab/Metagenomic-DeepFRI.svg?style=flat-square&maxAge=600)](https://github.com/Tomasz-Lab/Metagenomic-DeepFRI//issues)
 [![Docs](https://img.shields.io/readthedocs/metagenomic-deepfri/latest?style=flat-square&maxAge=600)](https://metagenomic-deepfri.readthedocs.io/)
-[![Changelog](https://img.shields.io/badge/keep%20a-changelog-8A0707.svg?maxAge=2678400&style=flat-square)](https://github.com/bioinf-MCB/Metagenomic-DeepFRI/blob/main/CHANGELOG.md)
+[![Changelog](https://img.shields.io/badge/keep%20a-changelog-8A0707.svg?maxAge=2678400&style=flat-square)](https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/blob/main/CHANGELOG.md)
 [![Downloads](https://img.shields.io/pypi/dm/mdeepfri?style=flat-square&color=303f9f&maxAge=86400&label=downloads)](https://pepy.tech/project/mdeepfri)
 
 *A pipeline for annotation of genes with [DeepFRI](https://github.com/flatironinstitute/DeepFRI),
@@ -35,7 +35,7 @@ Metagenomic-DeepFRI combines:
 - **Sequence-based predictions** using DeepFRI's neural networks
 - **Fast searches** with MMseqs2 for database alignment
 - **Significant speedup** of
-[2-12×](https://github.com/bioinf-mcb/Metagenomic-DeepFRI/blob/main/weight_convert/onnx_vs_tf2.png)
+[2-12×](https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/blob/main/weight_convert/onnx_vs_tf2.png)
 compared to standard DeepFRI implementation.
 
 ### 📋 Pipeline stages
@@ -47,7 +47,7 @@ with `MMseqs2`.
 4. Run `DeepFRI` with the structure if found in the database, otherwise run
 `DeepFRI` with sequence only.
 
-![image.png](https://github.com/bioinf-mcb/Metagenomic-DeepFRI/blob/main/docs/_images/mdeepfri-design.drawio.png)
+![image.png](https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/blob/main/docs/_images/mdeepfri-design.drawio.png)
 
 ### 🛠️ Built With
 
@@ -133,7 +133,7 @@ Tested databases:
 `FoldComp` has certain inconsistencies in the way FASTA sequences are extracted ([example](https://github.com/steineggerlab/foldcomp/issues/51)),
 therefore pipeline was tweaked for each database.
 If database you need does not work, please report in
-[issues](https://github.com/bioinf-mcb/Metagenomic-DeepFRI/issues).
+[issues](https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/issues).
 
 `ATTENTION:` database creation is a very sensitive step which
 relies on external software.
@@ -354,7 +354,7 @@ in an academic work, please cite the papers behind it:
 ### ⚠️ Issue Tracker
 
 Found a bug? Have an enhancement request? Head over to the
-[GitHub issue tracker](https://github.com/bioinf-mcb/Metagenomic-DeepFRI/issues)
+[GitHub issue tracker](https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/issues)
 if you need to report or ask something. If you are filing a bug, please
 include as much information as you can about the issue, and try to recreate
 the same bug in a simple, easily reproducible situation.
@@ -362,13 +362,13 @@ the same bug in a simple, easily reproducible situation.
 ### 🏗️ Contributing
 
 Contributions are more than welcome! See
-[`CONTRIBUTING.md`](https://github.com/bioinf-mcb/Metagenomic-DeepFRI/blob/main/CONTRIBUTING.md)
+[`CONTRIBUTING.md`](https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/blob/main/CONTRIBUTING.md)
 for more details.
 
 ## 📋 Changelog
 
 This project adheres to [Semantic Versioning](http://semver.org/spec/v2.0.0.html)
-and provides a [changelog](https://github.com/bioinf-mcb/Metagenomic-DeepFRI/blob/main/CONTRIBUTING.md)
+and provides a [changelog](https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/blob/main/CONTRIBUTING.md)
 in the [Keep a Changelog](http://keepachangelog.com/en/1.0.0/) format.
 
 ## ⚖️ License

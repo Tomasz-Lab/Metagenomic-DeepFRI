@@ -1,8 +1,8 @@
 Welcome to Metagenomic-DeepFRI's documentation! |Stars|
 =======================================================
 
-.. |Stars| image:: https://img.shields.io/github/stars/bioinf-MCB/Metagenomic-DeepFRI.svg?style=social&maxAge=3600&label=Star
-   :target: https://github.com/bioinf-MCB/Metagenomic-DeepFRI/stargazers
+.. |Stars| image:: https://img.shields.io/github/stars/Tomasz-Lab/Metagenomic-DeepFRI.svg?style=social&maxAge=3600&label=Star
+   :target: https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/stargazers
 
 
 Overview

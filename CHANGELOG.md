@@ -9,34 +9,66 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-[Unreleased]: https://github.com/bioinf-MCB/Metagenomic-DeepFRI/compare/v1.1.10...HEAD
+[Unreleased]: https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/compare/v1.2.0...HEAD
+
+## [1.2.0] - 2026-08-10
+
+[1.2.0]: https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/compare/v1.1.10...v1.2.0
 
 ### Added
 
-- GO term mapping to COG categories, SuperCOGs and Information Content (IC) in output results.
+- GO term mapping to COG categories, SuperCOGs and Information Content (IC) in output results -
+new `ic`, `cogs` and `supercogs` columns in `results.tsv`.
 - `go2cog_USECLO_ALL.tsv` mapping file in assets from [GO2COG](https://github.com/Tomasz-Lab/go2cog)
+- `--custom-mapping` parameter - predict from a user-supplied protein-to-structure TSV,
+bypassing the database search. Proteins without a loadable structure fall back to CNN.
+- `--propagate-go-terms` and `--obo-path` parameters - propagate GO terms up the ontology
+DAG with the true-path rule (`is_a`, `part_of`), written to `results_propagated.tsv`.
+- `--write-metadata` flag - prepend `##` provenance lines (timestamp, version, command line)
+to `results.tsv`. Off by default so the file stays a plain TSV.
+- `[gpu]` install extra - `pip install mdeepfri[gpu]` pins ONNX Runtime 1.26 with
+bundled CUDA 12 libraries (Linux x86_64).
 
-## [1.1.10] - 2026-01-16
+### Changed
 
-[1.1.10]: https://github.com/bioinf-MCB/Metagenomic-DeepFRI/compare/v1.1.9...v1.1.10
+- default install (`pip install mdeepfri`) now ships CPU ONNX Runtime.
+GPU users should install `mdeepfri[gpu]`; a system CUDA stack is still picked up
+automatically when present.
+- `prediction_matrix_{mode}.tsv` is split into `prediction_matrix_{mode}_gcn.tsv` and
+`prediction_matrix_{mode}_cnn.tsv` when the GCN and CNN heads use different
+output vocabularies (the case for `v1.1` weights).
+- license corrected from `GPL-3.0-or-later` to `BSD-3-Clause` - the previous metadata
+did not match the shipped `LICENSE` file.
 
 ### Fixed
 
-- error with processing `UniProt` headers ([#101](https://github.com/bioinf-MCB/Metagenomic-DeepFRI/issues/101))
+- `IndexError` when only the CNN was used with `v1.1` weights ([#110](https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/issues/110))
+- GCN/CNN output vocabulary mismatch producing misaligned GO term names
+- spurious empty column in `results.tsv` - rows carried one more field than the header
+- unparsable `pyproject.toml` (missing separator in `dependencies`)
+- Information Content parsed as `float`, with row length guarding
+
+## [1.1.10] - 2026-01-16
+
+[1.1.10]: https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/compare/v1.1.9...v1.1.10
+
+### Fixed
+
+- error with processing `UniProt` headers ([#101](https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/issues/101))
 - error for no alignment result with `MMseqs`
-- critical error for selenoproteins is now an `info` ([#102](https://github.com/bioinf-MCB/Metagenomic-DeepFRI/issues/102))
+- critical error for selenoproteins is now an `info` ([#102](https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/issues/102))
 - uppercase sequences before `pyopal` to avoid alphabet errors
 
 ## [1.1.9] - 2026-01-06
 
-[1.1.9]: https://github.com/bioinf-MCB/Metagenomic-DeepFRI/compare/v1.1.8...v1.1.9
+[1.1.9]: https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/compare/v1.1.8...v1.1.9
 
 ### Added
 
 - `--alignment-min-coverage` parameter to filter low coverage alignments
 - `generate-config` CLI command - generate config file in case models are downloaded manually
-- `calculate-maps` CLI command - calculates all contact maps from PDB/MMCIF in directory ([#100](https://github.com/bioinf-MCB/Metagenomic-DeepFRI/issues/100))
-- prediction matrices - predicted vectors allow to compare proteins with the help of distance analysis ([#79](https://github.com/bioinf-MCB/Metagenomic-DeepFRI/issues/79))
+- `calculate-maps` CLI command - calculates all contact maps from PDB/MMCIF in directory ([#100](https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/issues/100))
+- prediction matrices - predicted vectors allow to compare proteins with the help of distance analysis ([#79](https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/issues/79))
 - custom scoring matrices - default `VTML80`
 - support for python < 3.13
 
@@ -45,14 +77,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Skipping extraction of broken structures from `highquality_clust30`,
 which caused segmentation fault (<https://github.com/steineggerlab/foldcomp/issues/56>)
 - all output from the software log to `stdout`
-- `np.genfromtext` bug ([#96](https://github.com/bioinf-MCB/Metagenomic-DeepFRI/issues/96))
-- contact map wrapping ([#99](https://github.com/bioinf-MCB/Metagenomic-DeepFRI/issues/99))
-- query file losing sequences ([#92](https://github.com/bioinf-MCB/Metagenomic-DeepFRI/issues/92))
+- `np.genfromtext` bug ([#96](https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/issues/96))
+- contact map wrapping ([#99](https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/issues/99))
+- query file losing sequences ([#92](https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/issues/92))
 - `MMseqs` convertalis unlimited thread usage
 
 ## [1.1.8] - 2024-06-26
 
-[1.1.8]: https://github.com/bioinf-MCB/Metagenomic-DeepFRI/compare/v1.1.7...v1.1.8
+[1.1.8]: https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/compare/v1.1.7...v1.1.8
 
 ### Added
 
@@ -67,15 +99,15 @@ which caused segmentation fault (<https://github.com/steineggerlab/foldcomp/issu
 
 ## [1.1.7] - 2024-06-10
 
-[1.1.7]: https://github.com/bioinf-MCB/Metagenomic-DeepFRI/compare/v1.1.6...v1.1.7
+[1.1.7]: https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/compare/v1.1.6...v1.1.7
 
 ### Fixed
 
-- resolved old naming issues ([#84](https://github.com/bioinf-MCB/Metagenomic-DeepFRI/issues/84))
+- resolved old naming issues ([#84](https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/issues/84))
 
 ## [1.1.6] - 2024-06-04
 
-[1.1.6]: https://github.com/bioinf-MCB/Metagenomic-DeepFRI/compare/v1.1.5...v1.1.6
+[1.1.6]: https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/compare/v1.1.5...v1.1.6
 
 ### Added
 
@@ -85,13 +117,13 @@ which caused segmentation fault (<https://github.com/steineggerlab/foldcomp/issu
 
 ## [1.1.5] - 2024-04-01
 
-[1.1.5]: https://github.com/bioinf-MCB/Metagenomic-DeepFRI/compare/v1.1.4...v1.1.5
+[1.1.5]: https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/compare/v1.1.4...v1.1.5
 
 ### Added
 
 - improved logging
-- support for ESM databases ([#80](https://github.com/bioinf-MCB/Metagenomic-DeepFRI/issues/80))
-- corrected structures retrieval from PDB ([#81](https://github.com/bioinf-MCB/Metagenomic-DeepFRI/issues/81), [#83](https://github.com/bioinf-MCB/Metagenomic-DeepFRI/issues/83))
+- support for ESM databases ([#80](https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/issues/80))
+- corrected structures retrieval from PDB ([#81](https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/issues/81), [#83](https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/issues/83))
   - correct non-standard amino acids
   - remove base pairs
 
@@ -103,7 +135,7 @@ improved search in large databases (ESM)
 
 ## [v1.1.4] - 2024-03-23
 
-[v1.1.4]: https://github.com/bioinf-MCB/Metagenomic-DeepFRI/compare/v1.1.3...v1.1.4
+[v1.1.4]: https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/compare/v1.1.3...v1.1.4
 
 ### Added
 
@@ -120,15 +152,15 @@ improved search in large databases (ESM)
 
 ## [v1.1.3] - 2024-03-13
 
-[v1.1.3]: https://github.com/bioinf-MCB/Metagenomic-DeepFRI/compare/v1.1.2...v1.1.3
+[v1.1.3]: https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/compare/v1.1.2...v1.1.3
 
 ### Fixes
 
-- bug where MMseqs2 returned empty results search [#73](https://github.com/bioinf-mcb/Metagenomic-DeepFRI/issues/73)
+- bug where MMseqs2 returned empty results search [#73](https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/issues/73)
 
 ## [v1.1.2] - 2024-02-22
 
-[v1.1.2]: https://github.com/bioinf-MCB/Metagenomic-DeepFRI/compare/v1.1.1...v1.1.2
+[v1.1.2]: https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/compare/v1.1.1...v1.1.2
 
 ### Added
 
@@ -145,7 +177,7 @@ better runtime and easier deploy
 
 ## [v1.1.1] - 2024-03-01
 
-[v1.1.1]: https://github.com/bioinf-MCB/Metagenomic-DeepFRI/compare/v1.0.0...v1.1.1
+[v1.1.1]: https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/compare/v1.0.0...v1.1.1
 
 ### Added
 

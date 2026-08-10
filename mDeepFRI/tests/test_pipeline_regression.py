@@ -6,7 +6,8 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 
 from mDeepFRI.database import Database
-from mDeepFRI.pipeline import QueryFile, predict_protein_function
+from mDeepFRI.pipeline import (FINAL_OUTPUT_HEADER, QueryFile,
+                               predict_protein_function)
 
 
 class TestPipelineRegression(unittest.TestCase):
@@ -408,6 +409,105 @@ class TestPipelineRegression(unittest.TestCase):
             with open(output_path / "results.tsv", "r") as f:
                 content = f.read()
             self.assertIn("\tcnn\t", content)
+
+    @patch("mDeepFRI.pipeline.Pool")
+    @patch("mDeepFRI.pipeline.load_deepfri_config")
+    @patch("mDeepFRI.pipeline.Predictor")
+    @patch("mDeepFRI.pipeline.align_mmseqs_results")
+    @patch("mDeepFRI.pipeline.extract_calpha_coords")
+    @patch("mDeepFRI.pipeline.build_align_contact_map")
+    @patch("mDeepFRI.pipeline.get_json_values")
+    def test_metadata_preamble_is_opt_in(
+        self,
+        mock_get_json_values,
+        mock_build_align_contact_map,
+        mock_extract_calpha_coords,
+        mock_align_mmseqs_results,
+        mock_predictor_cls,
+        mock_load_config,
+        mock_pool,
+    ):
+        """results.tsv starts with the column header unless --write-metadata.
+
+        The '##' provenance preamble breaks plain TSV readers, so it must stay
+        opt-in; passing command_str/version alone must not enable it.
+        """
+
+        mock_pool_instance = mock_pool.return_value
+        mock_pool_instance.__enter__.return_value = mock_pool_instance
+        mock_pool_instance.map.side_effect = lambda func, iterable: [
+            func(i) for i in iterable
+        ]
+        mock_load_config.return_value = {
+            "gcn": {
+                "bp": "path/to/gcn_bp.onnx"
+            },
+            "cnn": {
+                "bp": "path/to/cnn_bp.onnx"
+            },
+            "version": "1.1"
+        }
+        mock_get_json_values.side_effect = lambda path, key: (
+            ["GO:001", "GO:002"] if key == "goterms" else ["Term1", "Term2"])
+
+        mock_aln = MagicMock()
+        mock_aln.query_name = "A0A3B4WVX2_Gasdermin_pore_forming"
+        mock_aln.target_name = "Target1.1"
+        mock_aln.db_name = "TestDB"
+        mock_aln.query_identity = 0.9
+        mock_aln.query_coverage = 0.8
+        mock_aln.target_coverage = 0.8
+        mock_aln.query_sequence = "MFSKATANFVRQIDPEGSLIHVSRVNDSQKLVPMALVVKRNRLWFWQRPKYHPTDF"
+        mock_align_mmseqs_results.return_value = [mock_aln]
+        mock_extract_calpha_coords.return_value = [
+            np.zeros((len(mock_aln.query_sequence), 3))
+        ]
+        mock_build_align_contact_map.return_value = (mock_aln,
+                                                     np.random.rand(
+                                                         len(mock_aln.
+                                                             query_sequence),
+                                                         len(mock_aln.
+                                                             query_sequence)))
+        mock_predictor_cls.return_value.forward_pass.return_value = np.array(
+            [0.95, 0.05], dtype=np.float32)
+
+        query_file = QueryFile(filepath=str(self.query_file_path))
+        query_file.load_sequences()
+
+        mock_db = MagicMock(spec=Database)
+        mock_db.name = "TestDB"
+        mock_db.mmseqs_result = "path/to/mmseqs_results.tsv"
+        mock_db.sequence_db = "path/to/seq_db"
+
+        for write_metadata in (False, True):
+            with self.subTest(write_metadata=write_metadata), \
+                    tempfile.TemporaryDirectory() as temp_out:
+                output_path = Path(temp_out)
+                predict_protein_function(
+                    query_file=query_file,
+                    databases=(mock_db, ),
+                    weights="path/to/weights",
+                    output_path=str(output_path),
+                    deepfri_processing_modes=["bp"],
+                    skip_matrix=True,
+                    command_str="mDeepFRI predict-function -i q.faa",
+                    version="1.2.0",
+                    write_metadata=write_metadata)
+
+                lines = (output_path /
+                         "results.tsv").read_text().splitlines()
+                if write_metadata:
+                    self.assertTrue(lines[0].startswith("## "))
+                    self.assertIn("## mDeepFRI-1.2.0", lines)
+                    header_index = 3
+                else:
+                    self.assertFalse(
+                        any(line.startswith("##") for line in lines),
+                        "results.tsv must not contain a '##' preamble by default"
+                    )
+                    header_index = 0
+                self.assertEqual(lines[header_index].split("\t"),
+                                 FINAL_OUTPUT_HEADER)
 
 
 if __name__ == '__main__':

@@ -52,6 +52,18 @@ Main Results File
 The main output file containing functional annotations for all query proteins.
 This tab-separated file contains the following columns:
 
+By default the first line is the column header, so the file can be read
+directly by any TSV parser, e.g.
+``pandas.read_csv("results.tsv", sep="\t")``.
+
+.. note::
+
+    Pass ``--write-metadata`` to prepend provenance lines (timestamp,
+    ``mDeepFRI`` version and the full command line), each prefixed with
+    ``##``. This is off by default because the preamble has to be skipped
+    explicitly when parsing, e.g.
+    ``pandas.read_csv("results.tsv", sep="\t", comment="#")``.
+
 Column Descriptions
 -------------------
 

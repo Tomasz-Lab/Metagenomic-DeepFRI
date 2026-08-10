@@ -1,6 +1,6 @@
 [project]
 name = "mDeepFRI"
-version = "1.1.10"
+version = "1.2.0"
 description = "Pipeline for searching and aligning contact maps for proteins, and function prediction with DeepFRI."
 readme = { file = "README.md", content-type = "text/markdown" }
 license = "BSD-3-Clause"
@@ -15,9 +15,8 @@ keywords = ["bioinformatics", "protein", "function", "deep-learning"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Programming Language :: Cython",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: Implementation :: CPython",
     "Operating System :: MacOS",
     "Operating System :: POSIX :: Linux",
@@ -31,16 +30,16 @@ dependencies = [
     "pyopal ~=0.7",
     "foldcomp",
     "tqdm",
-    "onnxruntime ~=1.26.0"
+    "onnxruntime ~=1.26.0",
     "obonet >=0.3",
     "networkx >=2.6",
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/bioinf-MCB/Metagenomic-DeepFRI"
-"Bug Tracker" = "https://github.com/bioinf-MCB/Metagenomic-DeepFRI/issues"
-"Changelog" = "https://github.com/bioinf-MCB/Metagenomic-DeepFRI/blob/main/CHANGELOG.md"
-"Builds" = "https://github.com/bioinf-MCB/Metagenomic-DeepFRI/actions"
+"Homepage" = "https://github.com/Tomasz-Lab/Metagenomic-DeepFRI"
+"Bug Tracker" = "https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/issues"
+"Changelog" = "https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/blob/main/CHANGELOG.md"
+"Builds" = "https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/actions"
 "PyPI" = "https://pypi.org/project/mdeepfri"
 
 [project.optional-dependencies]

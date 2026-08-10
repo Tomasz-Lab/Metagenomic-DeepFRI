@@ -111,7 +111,7 @@ html_theme_options = {
     "icon_links": [
         {
             "name": "GitHub",
-            "url": "https://github.com/bioinf-MCB/Metagenomic-DeepFRI",
+            "url": "https://github.com/Tomasz-Lab/Metagenomic-DeepFRI",
             "icon": "fa-brands fa-github",
         },
         {
@@ -138,7 +138,7 @@ html_theme_options = {
 }
 
 html_context = {
-    "github_user": "bioinf-MCB",
+    "github_user": "Tomasz-Lab",
     "github_repo": "Metagenomic-DeepFRI",
     "github_version": "main",
     "doc_path": "docs",

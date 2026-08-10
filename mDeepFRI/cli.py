@@ -422,7 +422,14 @@ def search_databases(ctx, input, output, db_path, mmseqs_sensitivity,
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     help="TSV file mapping query IDs to structure paths. Bypasses database search.",
 )
-
+@click.option(
+    "--write-metadata",
+    default=False,
+    type=bool,
+    is_flag=True,
+    help="Prepend '##' comment lines with timestamp, version and command line "
+    "to results.tsv. Off by default, so the file stays directly parsable.",
+)
 @click.option(
     "--propagate-go-terms",
     default=False,
@@ -431,7 +438,6 @@ def search_databases(ctx, input, output, db_path, mmseqs_sensitivity,
     help="Propagate GO terms up the ontology DAG using the true-path rule "
     "(is_a and part_of relations). Downloads go-basic.obo automatically.",
 )
-
 @click.option(
     "--obo-path",
     default=None,
@@ -449,7 +455,8 @@ def predict_function(ctx, input, db_path, weights, output, processing_modes,
                      alignment_gap_extend, remove_intermediate, overwrite,
                      threads, skip_pdb, min_length, max_length, tmpdir,
                      save_structures, save_cmaps, skip_matrix, scoring_matrix,
-                     custom_mapping, propagate_go_terms, obo_path):
+                     custom_mapping, write_metadata, propagate_go_terms,
+                     obo_path):
     """Predict protein function from sequence."""
 
     logger.info("Starting Metagenomic-DeepFRI.")
@@ -470,8 +477,13 @@ def predict_function(ctx, input, db_path, weights, output, processing_modes,
         deepfri_dbs = ()
     else:
         if not db_path:
-            raise click.UsageError(
-                "Provide at least one --db-path or use --custom-mapping.")
+            if skip_pdb:
+                logger.warning(
+                    "No --db-path given and --skip-pdb is set - no structures "
+                    "will be searched, all proteins fall back to CNN "
+                    "(sequence-only) prediction.")
+            else:
+                logger.info("No --db-path given; searching PDB100 only.")
         deepfri_dbs = hierarchical_database_search(
             query_file=query_file,
             output_path=output_path / "database_search",
@@ -495,9 +507,10 @@ def predict_function(ctx, input, db_path, weights, output, processing_modes,
                                      min_length=min_length,
                                      max_length=max_length)
 
-    # Reconstruct command string for metadata
-    command_str = " ".join(sys.argv)
-    version_str = importlib.metadata.version("mDeepFRI")
+    # Reconstruct command string for metadata; only emitted with --write-metadata
+    command_str = " ".join(sys.argv) if write_metadata else None
+    version_str = (importlib.metadata.version("mDeepFRI")
+                   if write_metadata else None)
 
     predict_protein_function(
         query_file=query_file,
@@ -516,6 +529,7 @@ def predict_function(ctx, input, db_path, weights, output, processing_modes,
         scoring_matrix=scoring_matrix,
         command_str=command_str,
         version=version_str,
+        write_metadata=write_metadata,
         custom_mapping_file=str(custom_mapping) if custom_mapping else None,
         propagate_go_terms=propagate_go_terms,
         obo_path=obo_path)

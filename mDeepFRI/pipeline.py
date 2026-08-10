@@ -548,6 +548,7 @@ def predict_protein_function(
         scoring_matrix: str = "VTML80",
         command_str: Optional[str] = None,
         version: Optional[str] = None,
+        write_metadata: bool = False,
         custom_mapping_file: Optional[str] = None,
         propagate_go_terms: bool = False,
         obo_path: Optional[str] = None):
@@ -593,9 +594,13 @@ def predict_protein_function(
         scoring_matrix (str, optional): Scoring matrix for alignment.
             Defaults to "VTML80".
         command_str (str, optional): The original command-line invocation.
-            Defaults to None.
+            Only written if write_metadata is True. Defaults to None.
         version (str, optional): The version of mDeepFRI.
-            Defaults to None.
+            Only written if write_metadata is True. Defaults to None.
+        write_metadata (bool, optional): Prepend '##' comment lines with
+            timestamp, version and command line to results.tsv. Defaults to
+            False, keeping the column header on the first line so the file is
+            directly readable by standard TSV parsers.
         custom_mapping_file (str, optional): Path to TSV file with protein-to-structure mappings.
             Format: protein_id<tab>structure_path (skip header).
             When provided, bypasses hierarchical database search. Proteins with a
@@ -927,8 +932,9 @@ def predict_protein_function(
 
     final_output = output_path / "results.tsv"
     with open(final_output, "w", encoding="utf-8") as fout:
-        # Write metadata at the beginning
-        if command_str is not None or version is not None:
+        # Optional '##' provenance preamble. Off by default so that results.tsv
+        # stays a plain TSV whose first line is the column header.
+        if write_metadata:
             # Write timestamp
             timestamp = datetime.datetime.now().strftime(
                 "%a %b %d %H:%M:%S %Y")
