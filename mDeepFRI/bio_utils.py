@@ -478,19 +478,30 @@ def _format_seqres_records(query_sequence: str, chain: str = "A") -> list[str]:
 
 
 BACKBONE_ATOM_NAMES = ("N", "CA", "C", "O")
+# Widest value the fixed-width PDB B-factor field (columns 61-66) can hold.
+B_FACTOR_MAX = 999.99
 
 
 def _format_carved_pdb_header(alignment: AlignmentResult,
                               chain: str = "A") -> list[str]:
     template_id = alignment.target_name
     query_id = alignment.query_name
+    # Recorded so that downstream tools can read the provenance of the
+    # B-factor column instead of guessing it from the template's TITLE line.
+    template_db = alignment.db_name or "user-supplied structure file"
     remarks = [
         "REMARK   1 CARVED BY MDEEPFRI",
         f"REMARK   1 TEMPLATE STRUCTURE: {template_id}",
+        f"REMARK   1 TEMPLATE DATABASE: {template_db}",
         f"REMARK   1 QUERY SEQUENCE: {query_id}",
         "REMARK   1 ALIGNMENT METHOD: PYOPAL GLOBAL NEEDLEMAN-WUNSCH",
         "REMARK   1 BACKBONE ATOMS (N, CA, C, O) ARE TRANSFERRED FROM THE",
         "REMARK   1 TEMPLATE. SIDE CHAINS ARE REBUILT WITH PIPPACK.",
+        "REMARK   1 B-FACTOR COLUMN HOLDS THE TEMPLATE B-FACTORS, WHICH ARE",
+        "REMARK   1 PER-RESIDUE PLDDT WHEN THE TEMPLATE IS A PREDICTED MODEL.",
+        "REMARK   1 REBUILT SIDE-CHAIN ATOMS INHERIT THE VALUE OF THE CA ATOM",
+        "REMARK   1 OF THEIR RESIDUE. 0.00 MEANS THE TEMPLATE CARRIED NO",
+        "REMARK   1 B-FACTOR DATA FOR THAT ATOM.",
         "REMARK   1 RESIDUE NAMES AND NUMBERING FOLLOW THE QUERY SEQUENCE.",
         "REMARK   1 QUERY INSERTIONS (GAPS IN TEMPLATE ALIGNMENT) APPEAR IN",
         "REMARK   1 SEQRES ONLY AND HAVE NO ATOM COORDINATES.",
@@ -533,10 +544,12 @@ def carve_aligned_pdb(alignment: AlignmentResult,
     Carve a query-aligned backbone PDB from a template and PyOpal alignment.
 
     Only backbone atoms (N, CA, C, O) are transferred from mapped template
-    residues. Residue names and numbering follow the query sequence (1-based).
-    Query insertions aligned to template gaps are included in SEQRES only.
-    Residues with incomplete backbone are still written with available atoms;
-    a warning is logged and PIPPack will skip packing after validation.
+    residues, together with their B-factors -- the per-residue pLDDT when the
+    template is a predicted model. Residue names and numbering follow the query
+    sequence (1-based). Query insertions aligned to template gaps are included
+    in SEQRES only. Residues with incomplete backbone are still written with
+    available atoms; a warning is logged and PIPPack will skip packing after
+    validation.
 
     Args:
         alignment: Pairwise alignment with gapped sequences.
@@ -645,7 +658,9 @@ def validate_backbone_pdb(
     else:
         pdb_text = str(pdb_source)
 
-    structure = load_structure(pdb_text, filetype="pdb")
+    structure = load_structure(pdb_text,
+                               filetype="pdb",
+                               include_b_factor=False)
     protein = structure[structure.hetero == False]  # noqa
     if len(protein) == 0:
         return BackboneValidationResult(ok=False,
@@ -1183,26 +1198,80 @@ def get_residues_coordinates(structure: np.ndarray,
     return (residues, coords)
 
 
+def _sanitise_b_factor(values: np.ndarray) -> np.ndarray:
+    """
+    Coerce a B-factor annotation into the range the PDB format can write.
+
+    An mmCIF template without ``B_iso_or_equiv`` yields NaN, and
+    ``PDBFile.set_structure`` rejects NaN outright instead of writing a
+    placeholder, so leaving the values untouched would turn a template with no
+    B-factor column into a hard carving failure.
+    """
+    sanitised = np.nan_to_num(np.asarray(values, dtype=np.float32),
+                              nan=0.0,
+                              posinf=B_FACTOR_MAX,
+                              neginf=0.0)
+    return np.clip(sanitised, 0.0, B_FACTOR_MAX)
+
+
+def _read_structure_model(structure_string: str,
+                          filetype: Literal["mmcif", "pdb"],
+                          extra_fields: List[str]) -> np.ndarray:
+    """
+    Parse the first model of a structure string with Biotite.
+
+    ``extra_fields`` must be a list: Biotite reads *every* optional annotation
+    when it is None, which is not what any caller here wants.
+    """
+    if filetype == "mmcif":
+        mmcif = CIFFile.read(StringIO(structure_string))
+        return get_structure(mmcif, model=1, extra_fields=extra_fields)
+    if filetype == "pdb":
+        pdb = PDBFile.read(StringIO(structure_string))
+        return pdb.get_structure(extra_fields=extra_fields)[0]
+    raise NotImplementedError(f"Filetype {filetype} not supported.")
+
+
 def load_structure(structure_string: str,
-                   filetype: Literal["mmcif", "pdb"] = "mmcif") -> np.ndarray:
+                   filetype: Literal["mmcif", "pdb"] = "mmcif",
+                   include_b_factor: bool = True) -> np.ndarray:
     """
     Load structure from string.
 
     Args:
         structure_string (str): Structure file read into string.
         filetype (str): Filetype of the structure.
+        include_b_factor (bool): Read the template B-factor column. Biotite
+            drops it unless it is requested explicitly, so carving would
+            otherwise write 0.00 for every atom and discard the per-residue
+            pLDDT of a predicted template. Callers that only need the sequence
+            or C-alpha coordinates can pass False to skip the extra column.
 
     Returns:
-        np.ndarray: Structure.
+        np.ndarray: Structure. When ``include_b_factor`` is set the returned
+        array always carries a ``b_factor`` annotation, filled with zeros if
+        the template provided none.
     """
-    if filetype == "mmcif":
-        mmcif = CIFFile.read(StringIO(structure_string))
-        structure = get_structure(mmcif, model=1)
-    elif filetype == "pdb":
-        pdb = PDBFile.read(StringIO(structure_string))
-        structure = pdb.get_structure()[0]
-    else:
-        raise NotImplementedError(f"Filetype {filetype} not supported.")
+    extra_fields = ["b_factor"] if include_b_factor else []
+    try:
+        structure = _read_structure_model(structure_string, filetype,
+                                          extra_fields)
+    except (ValueError, KeyError) as exc:
+        if not extra_fields:
+            raise
+        # A blank or malformed B-factor column is a parse error, not a reason
+        # to fail the whole carving job.
+        logger.warning(
+            "Could not read the template B-factor column (%s); "
+            "continuing with B-factors set to 0.00.", exc)
+        structure = _read_structure_model(structure_string, filetype, [])
+
+    if include_b_factor:
+        if "b_factor" in structure.get_annotation_categories():
+            b_factor = _sanitise_b_factor(structure.b_factor)
+        else:
+            b_factor = np.zeros(structure.array_length(), dtype=np.float32)
+        structure.set_annotation("b_factor", b_factor)
 
     return structure
 
@@ -1213,7 +1282,9 @@ def extract_residue_sequence(
         filetype: Literal["mmcif", "pdb"] = "mmcif",
         structure_path: Optional[str] = None) -> Optional[str]:
     """Extract one-letter sequence from a structure without loading coordinates."""
-    structure = load_structure(structure_string, filetype=filetype)
+    structure = load_structure(structure_string,
+                               filetype=filetype,
+                               include_b_factor=False)
     chain = resolve_structure_chain(structure, structure_path, chain)
     protein_chain = structure[structure.chain_id == chain]
     ca_atoms = protein_chain[(protein_chain.atom_name == "CA")
@@ -1243,7 +1314,9 @@ def extract_residues_coordinates(
         Tuple[str, np.ndarray]: Tuple of residues and coordinates.
     """
 
-    structure = load_structure(structure_string, filetype=filetype)
+    structure = load_structure(structure_string,
+                               filetype=filetype,
+                               include_b_factor=False)
     residues, coords = get_residues_coordinates(
         structure, chain=chain, structure_path=structure_path)
 

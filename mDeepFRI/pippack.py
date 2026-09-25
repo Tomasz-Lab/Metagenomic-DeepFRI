@@ -205,6 +205,60 @@ def _pdb_atom_name(line: str) -> str:
     return line[12:16].strip() if len(line) >= 16 else ""
 
 
+def _pdb_b_factor(line: str) -> str:
+    """Return the raw six-character B-factor field (columns 61-66)."""
+    return line[60:66] if len(line) >= 66 else "      "
+
+
+def collect_b_factors(pdb_text: str) -> Dict[Tuple[int, str], str]:
+    """
+    Map ``(res_id, atom_name)`` to the raw B-factor field of a carved PDB.
+
+    Fields are kept as their formatted six-character text so they survive the
+    round trip through PIPPack unchanged.
+    """
+    values: Dict[Tuple[int, str], str] = {}
+    for line in pdb_text.splitlines():
+        if line.startswith(("ATOM", "HETATM")):
+            values[(_pdb_res_id(line), _pdb_atom_name(line))] = _pdb_b_factor(
+                line)
+    return values
+
+
+def restore_b_factors(pdb_text: str,
+                      carved_b_factors: Dict[Tuple[int, str], str]) -> str:
+    """
+    Copy carved B-factors onto packed ATOM records.
+
+    PIPPack writes its own B-factor column, so the values carried over from
+    the template -- per-residue pLDDT when the template is a predicted model
+    -- have to be put back after packing. Atoms present before packing are
+    matched on ``(res_id, atom_name)``; rebuilt side-chain atoms inherit the
+    value of their residue's CA atom, which is exact for pLDDT because pLDDT
+    is per-residue.
+
+    Args:
+        pdb_text: Packed ATOM records.
+        carved_b_factors: Mapping from :func:`collect_b_factors` built on the
+            carved PDB as it was before packing.
+
+    Returns:
+        The packed ATOM records with template B-factors reinstated.
+    """
+    lines = []
+    for line in pdb_text.splitlines():
+        if line.startswith(("ATOM", "HETATM")):
+            res_id = _pdb_res_id(line)
+            b_factor = carved_b_factors.get((res_id, _pdb_atom_name(line)))
+            if b_factor is None:
+                b_factor = carved_b_factors.get((res_id, "CA"))
+            if b_factor is not None:
+                padded = line.ljust(80)
+                line = f"{padded[:60]}{b_factor}{padded[66:]}".rstrip()
+        lines.append(line)
+    return "\n".join(lines) + "\n"
+
+
 def _renumber_atom_serial(line: str, serial: int) -> str:
     """Rewrite columns 7-11 with a new atom serial number."""
     padded = line.ljust(80)
@@ -446,8 +500,9 @@ def pack_carved_structures(
 
     Incomplete / CA-only structures are skipped (backbone PDB kept). UNK/SEC/PYL
     backbone atoms are stashed before packing (PIPPack drops them) and
-    reinserted afterward. Packed outputs replace the carved files in place after
-    REMARK/SEQRES headers are reattached.
+    reinserted afterward. PIPPack writes its own B-factor column, so the carved
+    template B-factors are reinstated before the REMARK/SEQRES headers are
+    reattached and the packed outputs replace the carved files in place.
 
     Returns:
         Tuple of ``(packed_count, skipped_count)``.
@@ -600,6 +655,16 @@ def pack_carved_structures(
                 reinserted_counts[res_name] = (
                     reinserted_counts.get(res_name, 0) + count)
             total_input_ca += input_ca
+
+            try:
+                merged_atoms = restore_b_factors(
+                    merged_atoms, collect_b_factors(input_text))
+            except ValueError as exc:
+                # Losing the B-factors is worse than a malformed column, but
+                # neither is a reason to throw away a packed structure.
+                logger.warning(
+                    "%s: could not reinstate carved B-factors (%s); keeping "
+                    "the B-factors written by PIPPack.", name, exc)
 
             merged = reattach_pdb_header(headers[name], merged_atoms)
             pdb_path.write_text(merged, encoding="utf-8")

@@ -10,15 +10,15 @@ from biotite.structure.io.pdb import PDBFile
 
 from mDeepFRI.alignment import AlignmentResult
 from mDeepFRI.bio_utils import (ONE_TO_THREE, BACKBONE_ATOM_NAMES,
-                                build_target_to_query_map, carve_aligned_pdb,
-                                chain_id_from_filename,
+                                B_FACTOR_MAX, build_target_to_query_map,
+                                carve_aligned_pdb, chain_id_from_filename,
                                 compress_carved_structures,
                                 extract_pdb_header, extract_residues_coordinates,
                                 get_residue_atom_groups, load_structure,
                                 prefetch_template_structures,
                                 reattach_pdb_header, resolve_structure_chain,
                                 validate_backbone_pdb, write_carved_pdbs,
-                                _get_template_for_carving)
+                                _get_template_for_carving, _sanitise_b_factor)
 
 
 class TestBuildTargetToQueryMap(unittest.TestCase):
@@ -469,6 +469,147 @@ class TestPrefetchAndParallelCarve(unittest.TestCase):
             compress_carved_structures(carve_dir, archive)
             self.assertFalse(archive.exists())
             self.assertTrue(carve_dir.exists())
+
+
+class TestBFactorPreservation(unittest.TestCase):
+    """
+    Biotite drops the B-factor column unless it is requested explicitly, which
+    silently replaced template pLDDT with 0.00 in every carved model.
+    """
+    def setUp(self):
+        self.data_dir = Path(__file__).parent / "data"
+        self.structure_path = self.data_dir / "AF-A0A3B4WVX2-F1-model_v6.cif"
+        self.structure_string = self.structure_path.read_text(encoding="utf-8")
+
+    def test_load_structure_reads_template_plddt(self):
+        structure = load_structure(self.structure_string, filetype="mmcif")
+        self.assertIn("b_factor", structure.get_annotation_categories())
+        # AFDB stores per-residue pLDDT in the B-factor column.
+        self.assertTrue((structure.b_factor > 0).all())
+        self.assertLessEqual(structure.b_factor.max(), 100.0)
+
+    def test_load_structure_can_skip_b_factor(self):
+        structure = load_structure(self.structure_string,
+                                   filetype="mmcif",
+                                   include_b_factor=False)
+        self.assertNotIn("b_factor", structure.get_annotation_categories())
+
+    def test_carved_pdb_keeps_template_b_factors(self):
+        structure = load_structure(self.structure_string, filetype="mmcif")
+        groups = get_residue_atom_groups(structure, chain="A")[:5]
+        mini = concatenate(groups)
+        pdb_file = PDBFile()
+        pdb_file.set_structure(mini)
+        buffer = StringIO()
+        pdb_file.write(buffer)
+        mini_pdb = buffer.getvalue()
+
+        target_sequence, _ = extract_residues_coordinates(
+            self.structure_string, chain="A", filetype="mmcif")
+        target_sequence = target_sequence[:5]
+
+        alignment = AlignmentResult(
+            query_name="q",
+            query_sequence=target_sequence,
+            target_name="mini_template",
+            target_sequence=target_sequence,
+            alignment="M" * 5,
+            db_name="afdb_test",
+            structure_path=str(self.structure_path),
+        )
+        alignment.gapped_sequence = target_sequence
+        alignment.gapped_target = target_sequence
+
+        carved = carve_aligned_pdb(alignment, mini_pdb, filetype="pdb",
+                                   chain="A")
+        atom_lines = "\n".join(line for line in carved.splitlines()
+                                if line.startswith(("ATOM", "HETATM")))
+        carved_atoms = PDBFile.read(StringIO(atom_lines)).get_structure(
+            extra_fields=["b_factor"])[0]
+
+        self.assertTrue((carved_atoms.b_factor > 0).all())
+        expected = mini[np.isin(mini.atom_name, list(BACKBONE_ATOM_NAMES))]
+        self.assertEqual(len(carved_atoms), len(expected))
+        np.testing.assert_allclose(sorted(carved_atoms.b_factor),
+                                   sorted(expected.b_factor),
+                                   atol=0.01)
+
+    def test_carved_header_records_b_factor_provenance(self):
+        alignment = AlignmentResult(query_name="q",
+                                    query_sequence="A",
+                                    target_name="t",
+                                    target_sequence="A",
+                                    alignment="M",
+                                    db_name="afdb_test")
+        alignment.gapped_sequence = "A"
+        alignment.gapped_target = "A"
+        from mDeepFRI.bio_utils import _format_carved_pdb_header
+        header = "\n".join(_format_carved_pdb_header(alignment, chain="A"))
+        self.assertIn("REMARK   1 TEMPLATE DATABASE: afdb_test", header)
+        self.assertIn("B-FACTOR COLUMN HOLDS THE TEMPLATE B-FACTORS", header)
+
+        alignment.db_name = None
+        header = "\n".join(_format_carved_pdb_header(alignment, chain="A"))
+        self.assertIn("TEMPLATE DATABASE: user-supplied structure file",
+                      header)
+
+    def test_missing_b_iso_column_does_not_break_carving(self):
+        """An mmCIF without B_iso_or_equiv parses to NaN, and the PDB writer
+        rejects NaN outright; it must come out as 0.00 instead of raising."""
+        cif = "\n".join([
+            "data_test",
+            "loop_",
+            "_atom_site.group_PDB",
+            "_atom_site.id",
+            "_atom_site.type_symbol",
+            "_atom_site.label_atom_id",
+            "_atom_site.label_comp_id",
+            "_atom_site.label_asym_id",
+            "_atom_site.auth_asym_id",
+            "_atom_site.label_seq_id",
+            "_atom_site.pdbx_PDB_ins_code",
+            "_atom_site.Cartn_x",
+            "_atom_site.Cartn_y",
+            "_atom_site.Cartn_z",
+            "_atom_site.occupancy",
+            "_atom_site.pdbx_PDB_model_num",
+            "ATOM 1 N N ALA A A 1 . 11.104 6.134 -6.504 1.00 1",
+            "ATOM 2 C CA ALA A A 1 . 11.639 6.071 -5.147 1.00 1",
+            "",
+        ])
+        structure = load_structure(cif, filetype="mmcif")
+        self.assertTrue((structure.b_factor == 0.0).all())
+        # Would raise BadStructureError if the NaN reached the writer.
+        pdb_file = PDBFile()
+        pdb_file.set_structure(structure)
+
+    def test_sanitise_b_factor_clips_to_pdb_field(self):
+        values = np.array([np.nan, -5.0, 1e6, 42.5], dtype=np.float32)
+        result = _sanitise_b_factor(values)
+        np.testing.assert_allclose(result,
+                                   [0.0, 0.0, B_FACTOR_MAX, 42.5],
+                                   atol=0.01)
+
+    def test_unreadable_b_factor_column_falls_back(self):
+        """A malformed B-factor column must not fail the whole carving job."""
+        real = load_structure(self.structure_string,
+                              filetype="mmcif",
+                              include_b_factor=False)
+        calls = []
+
+        def fake_read(structure_string, filetype, extra_fields):
+            calls.append(list(extra_fields))
+            if extra_fields:
+                raise ValueError("could not convert string to float: '?'")
+            return real
+
+        with patch("mDeepFRI.bio_utils._read_structure_model", fake_read):
+            structure = load_structure(self.structure_string,
+                                       filetype="mmcif")
+
+        self.assertEqual(calls, [["b_factor"], []])
+        self.assertIn("b_factor", structure.get_annotation_categories())
+        self.assertTrue((structure.b_factor == 0.0).all())
 
 
 if __name__ == "__main__":

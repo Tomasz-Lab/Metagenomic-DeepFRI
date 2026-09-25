@@ -15,6 +15,22 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - GO term mapping to COG categories, SuperCOGs and Information Content (IC) in output results.
 - `go2cog_USECLO_ALL.tsv` mapping file in assets from [GO2COG](https://github.com/Tomasz-Lab/go2cog)
+- `TEMPLATE DATABASE` and B-factor provenance `REMARK` records in carved PDBs,
+  so downstream tools can read where the B-factor column came from instead of
+  inferring it from the template's `TITLE` line.
+
+### Fixed
+
+- carved structures lost the template B-factor column. Biotite only reads
+  B-factors when they are requested explicitly, so every carved model was
+  written with `0.00` for every atom, discarding the per-residue pLDDT of
+  AlphaFold DB, ESM Atlas and other predicted templates.
+- PIPPack writes its own B-factor column, so the template values are now
+  reinstated after side-chain packing. Rebuilt side-chain atoms inherit the
+  value of their residue's CA atom.
+- an mmCIF template without `B_iso_or_equiv` parses to NaN, which the PDB
+  writer rejects outright; such templates now carve with `0.00` B-factors
+  instead of failing.
 
 ## [1.1.10] - 2026-01-16
 

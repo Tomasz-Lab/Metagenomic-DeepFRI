@@ -4,7 +4,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from mDeepFRI.pippack import (PippackConfigError, _count_ca_residues,
-                              pack_carved_structures, reinsert_nonstandard_backbone,
+                              collect_b_factors, pack_carved_structures,
+                              reinsert_nonstandard_backbone, restore_b_factors,
                               resolve_pippack_dir, stash_nonstandard_backbone)
 
 
@@ -295,6 +296,53 @@ class TestPackCarvedStructures(unittest.TestCase):
                 and line[12:16].strip() == "CA"
             ]
             self.assertEqual(ca_order, ["ALA", "UNK", "GLY"])
+
+
+class TestBFactorRestoration(unittest.TestCase):
+    """PIPPack writes its own B-factor column, overwriting template pLDDT."""
+    CARVED = (
+        "ATOM      1  N   ALA A   1      11.104   6.134  -6.504  1.00 91.25           N\n"
+        "ATOM      2  CA  ALA A   1      11.639   6.071  -5.147  1.00 91.25           C\n"
+        "ATOM      3  N   LEU A   2      12.104   7.134  -6.504  1.00 47.80           N\n"
+        "ATOM      4  CA  LEU A   2      12.639   7.071  -5.147  1.00 47.80           C\n"
+    )
+    # PIPPack zeroes the column and adds a rebuilt side-chain atom (CB).
+    PACKED = (
+        "ATOM      1  N   ALA A   1      11.104   6.134  -6.504  1.00  0.00           N\n"
+        "ATOM      2  CA  ALA A   1      11.639   6.071  -5.147  1.00  0.00           C\n"
+        "ATOM      3  N   LEU A   2      12.104   7.134  -6.504  1.00  0.00           N\n"
+        "ATOM      4  CA  LEU A   2      12.639   7.071  -5.147  1.00  0.00           C\n"
+        "ATOM      5  CB  LEU A   2      13.639   8.071  -5.147  1.00  0.00           C\n"
+    )
+
+    def _b_factors(self, pdb_text):
+        return [
+            float(line[60:66]) for line in pdb_text.splitlines()
+            if line.startswith(("ATOM", "HETATM"))
+        ]
+
+    def test_collect_b_factors_keys_on_residue_and_atom(self):
+        values = collect_b_factors(self.CARVED)
+        self.assertEqual(values[(1, "CA")].strip(), "91.25")
+        self.assertEqual(values[(2, "N")].strip(), "47.80")
+
+    def test_restore_b_factors_reinstates_template_values(self):
+        restored = restore_b_factors(self.PACKED,
+                                     collect_b_factors(self.CARVED))
+        # The rebuilt CB inherits its residue's CA value; pLDDT is per-residue.
+        self.assertEqual(self._b_factors(restored),
+                         [91.25, 91.25, 47.80, 47.80, 47.80])
+
+    def test_restore_b_factors_keeps_line_layout(self):
+        restored = restore_b_factors(self.PACKED,
+                                     collect_b_factors(self.CARVED))
+        for line in restored.splitlines():
+            self.assertEqual(line[54:60], "  1.00")  # occupancy untouched
+            self.assertEqual(line[76:78].strip(), line.strip()[-1])
+
+    def test_restore_b_factors_leaves_unknown_residues_alone(self):
+        restored = restore_b_factors(self.PACKED, {})
+        self.assertEqual(self._b_factors(restored), [0.0] * 5)
 
 
 if __name__ == "__main__":

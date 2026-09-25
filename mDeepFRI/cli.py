@@ -718,7 +718,7 @@ def make_cmaps(input_dir, output_dir, threshold):
         with open(os.path.join(input_dir, fname)) as f:
             structure_str = f.read()
         residues, coords = get_residues_coordinates(load_structure(
-            structure_str, filetype),
+            structure_str, filetype, include_b_factor=False),
                                                     chain="A")
         cmap = calculate_contact_map(coords, threshold)
         np.save(os.path.join(output_dir, fname.replace(".pdb", "_cmap.npy")),
