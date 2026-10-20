@@ -113,5 +113,6 @@ cpdef cnp.ndarray[DTYPE_t, ndim=2] align_contact_map(str query_alignment,
 
                 if q_res_i != -1 and q_res_j != -1:
                     output_view[q_res_i, q_res_j] = 1
+                    output_view[q_res_j, q_res_i] = 1
 
     return output_map

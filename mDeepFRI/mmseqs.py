@@ -44,6 +44,7 @@ from mDeepFRI.utils import retrieve_fasta_entries_as_dict, run_command
 
 MMSEQS_PATH = Path(mDeepFRI.__path__[0]).parent / "mmseqs" / "bin" / "mmseqs"
 FOLDCOMP_PATH = Path(mDeepFRI.__path__[0]).parent / "foldcomp_bin"
+STRING_COLUMNS = ("query", "target", "query_file", "database_file")
 
 
 @dataclass
@@ -205,6 +206,32 @@ def _convertalis(query_db: str,
         f"--format-output {args} --threads {threads}")
 
 
+def _read_results_tsv(filepath: str) -> np.recarray:
+    """
+    Read an MMseqs2 results table with a header row.
+
+    Identifiers and paths are kept as strings, all other columns are
+    parsed as floats.
+
+    Args:
+        filepath (str): Path to TSV file.
+
+    Returns:
+        np.recarray: One record per row; empty if the table has no rows.
+    """
+    with open(filepath, newline="", encoding="utf-8") as f:
+        reader = csv.reader(f, delimiter="\t")
+        names = next(reader)
+        rows = [row for row in reader if row]
+
+    columns = list(zip(*rows)) or [()] * len(names)
+    arrays = [
+        np.array(column, dtype=str if name in STRING_COLUMNS else float)
+        for name, column in zip(names, columns)
+    ]
+    return np.rec.fromarrays(arrays, names=names)
+
+
 class MMseqsResult(np.recarray):
     """
     Class for handling MMseqs2 search results. The results are stored in a TSV file.
@@ -288,15 +315,19 @@ class MMseqsResult(np.recarray):
         if self.query_fasta:
             query_col = np.array([self.query_fasta] * len(self.result_arr),
                                  dtype="U")
-            self.result_arr = rfn.append_fields(self.result_arr, "query_file",
-                                                query_col)
+            self.result_arr = rfn.append_fields(self.result_arr,
+                                                "query_file",
+                                                query_col,
+                                                usemask=False)
 
         # append database column to the result array
         if self.database:
             db_col = np.array([self.database] * len(self.result_arr),
                               dtype="U")
             self.result_arr = rfn.append_fields(self.result_arr,
-                                                "database_file", db_col)
+                                                "database_file",
+                                                db_col,
+                                                usemask=False)
 
         if filetype == "tsv":
             with open(filepath, "w", newline="") as f:
@@ -367,7 +398,7 @@ class MMseqsResult(np.recarray):
         try:
             final_table = np.concatenate(top_k)
         except ValueError:
-            final_table = np.empty(0, dtype=None)
+            final_table = self.result_arr[:0]
 
         return MMseqsResult(final_table, self.query_fasta, self.database)
 
@@ -442,11 +473,7 @@ class MMseqsResult(np.recarray):
                 >>> result = MMseqsResult.from_mmseqs_result("path/to/file.tsv")
         """
 
-        result_arr = np.genfromtxt(filepath,
-                                   delimiter="\t",
-                                   encoding="utf-8",
-                                   names=True,
-                                   dtype=None)
+        result_arr = _read_results_tsv(filepath)
         return cls(result_arr, query_fasta, database)
 
     @classmethod
@@ -466,11 +493,7 @@ class MMseqsResult(np.recarray):
                 >>> result = MMseqsResult.from_best_matches("path/to/file.tsv")
         """
 
-        result_arr = np.genfromtxt(filepath,
-                                   delimiter="\t",
-                                   encoding="utf-8",
-                                   names=True,
-                                   dtype=None)
+        result_arr = _read_results_tsv(filepath)
         try:
             query_file = np.unique(result_arr["query_file"])[0]
         except IndexError:

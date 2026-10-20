@@ -172,5 +172,44 @@ class TestMMseqsResult(unittest.TestCase):
             Path(self.out_npz).unlink()
 
 
+class TestMMseqsResultRoundTrip(unittest.TestCase):
+    header = "query\ttarget\tfident\tqcov\ttcov\tevalue\tbits\n"
+
+    def setUp(self):
+        self.temp_dir = TemporaryDirectory()
+        self.search_tsv = Path(self.temp_dir.name) / "search.tsv"
+        self.best_tsv = Path(self.temp_dir.name) / "best.tsv"
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def round_trip(self, rows):
+        self.search_tsv.write_text(self.header + "".join(rows))
+        result = MMseqsResult.from_mmseqs_result(self.search_tsv, "query.faa",
+                                                 "database")
+        result.find_best_matches(k=1).save(self.best_tsv)
+        return MMseqsResult.from_best_matches(self.best_tsv)
+
+    def test_numeric_like_ids_stay_strings(self):
+        best = self.round_trip([
+            "007\t1e5\t0.9\t1.0\t1.0\t1e-10\t150\n",
+            "2\t3\t0.8\t1.0\t1.0\t1e-10\t120\n",
+        ])
+        self.assertCountEqual(best["query"].tolist(), ["007", "2"])
+        self.assertCountEqual(best["target"].tolist(), ["1e5", "3"])
+
+    def test_single_hit(self):
+        best = self.round_trip(["seq1\ttarget1\t0.9\t1.0\t1.0\t1e-10\t150\n"])
+        self.assertEqual(len(best), 1)
+        self.assertEqual(best.query_fasta, Path("query.faa").resolve())
+
+    def test_no_hits(self):
+        best = self.round_trip([])
+        self.assertEqual(len(best), 0)
+        self.assertEqual(
+            self.best_tsv.read_text().splitlines()[0],
+            self.header.rstrip("\n") + "\tquery_file\tdatabase_file")
+
+
 if __name__ == "__main__":
     unittest.main()
