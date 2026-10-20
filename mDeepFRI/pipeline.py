@@ -593,11 +593,14 @@ def align_database_hits(databases: Tuple[Database],
 def select_templates(query_file: QueryFile,
                      databases: Tuple[Database],
                      alignments: Dict[str, List[AlignmentResult]],
+                     min_identity: float = 0.0,
+                     min_coverage: float = 0.0,
                      structures_path: Optional[pathlib.Path] = None,
                      threads: int = 1) -> List[AlignmentResult]:
     """
     Select one structural template per query, preferring earlier databases.
 
+    Alignments below the identity or query coverage thresholds are discarded.
     Queries whose template coordinates cannot be retrieved fall through to
     the next database.
 
@@ -606,6 +609,10 @@ def select_templates(query_file: QueryFile,
         databases (Tuple[Database]): Databases in order of preference.
         alignments (Dict[str, List[AlignmentResult]]): Alignments per database
             from `align_database_hits`.
+        min_identity (float, optional): Minimum alignment identity.
+            Defaults to 0.0.
+        min_coverage (float, optional): Minimum query coverage of the
+            alignment. Defaults to 0.0.
         structures_path (Path, optional): Directory to save template
             structures in, one subdirectory per database. Defaults to None.
         threads (int, optional): Number of threads. Defaults to 1.
@@ -616,9 +623,14 @@ def select_templates(query_file: QueryFile,
     templates = []
     for db in databases:
         templated = {aln.query_name for aln in templates}
+        passing = [
+            aln for aln in alignments[db.name]
+            if aln.query_identity >= min_identity
+            and aln.query_coverage >= min_coverage
+        ]
         new_alignments = {
             aln.query_name: aln
-            for aln in alignments[db.name] if aln.query_name not in templated
+            for aln in passing if aln.query_name not in templated
             and aln.query_name in query_file.sequences
         }
 
@@ -767,7 +779,9 @@ def predict_protein_function(
         write_metadata: bool = False,
         custom_mapping_file: Optional[str] = None,
         propagate_go_terms: bool = False,
-        obo_path: Optional[str] = None):
+        obo_path: Optional[str] = None,
+        alignment_min_identity: float = 0.0,
+        alignment_min_coverage: float = 0.0):
     """
     Predict protein function using DeepFRI.
 
@@ -829,6 +843,10 @@ def predict_protein_function(
         obo_path (str, optional): Path to GO OBO file (go-basic.obo).
             If None and propagate_go_terms is True, the file is downloaded
             to the output directory automatically.
+        alignment_min_identity (float, optional): Minimum identity of the
+            global alignment for a structural template. Defaults to 0.0.
+        alignment_min_coverage (float, optional): Minimum query coverage of
+            the global alignment for a structural template. Defaults to 0.0.
 
     Returns:
         None: Results are written to files in output_path.
@@ -871,6 +889,8 @@ def predict_protein_function(
             query_file,
             databases,
             alignments,
+            min_identity=alignment_min_identity,
+            min_coverage=alignment_min_coverage,
             structures_path=(output_path /
                              "structures" if save_structures else None),
             threads=threads)

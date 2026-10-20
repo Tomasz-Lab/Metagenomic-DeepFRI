@@ -11,6 +11,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 [Unreleased]: https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/compare/v1.2.0...HEAD
 
+### Added
+
+- `--alignment-min-identity` and `--alignment-min-coverage` parameters - discard structural templates whose global alignment falls below the thresholds; off by default
+
 ### Changed
 
 - `predict_protein_function` is composed of reusable stages: `align_database_hits`, `select_templates`, `build_contact_maps` and `predict_from_contact_maps`

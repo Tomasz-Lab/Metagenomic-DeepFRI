@@ -328,6 +328,13 @@ paths to `LD_LIBRARY_PATH`:
 export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$(python -c 'import os, nvidia.cudnn, nvidia.cublas, nvidia.cuda_runtime; libs=[nvidia.cudnn, nvidia.cublas, nvidia.cuda_runtime]; print(":".join([os.path.join(m.__path__[0], "lib") for m in libs]))')
 ```
 
+### 6. Structural template filtering
+
+Templates whose global alignment to the query falls below
+`--alignment-min-identity` or `--alignment-min-coverage` are discarded,
+and the query falls back to the next database or the CNN.
+Both filters are off by default.
+
 ## 🔖 Citations
 
 Metagenomic-DeepFRI is a scientific software. If you use it

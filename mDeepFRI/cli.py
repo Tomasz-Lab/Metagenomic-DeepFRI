@@ -416,6 +416,22 @@ def search_databases(ctx, input, output, db_path, mmseqs_sensitivity,
     help="Scoring matrix for sequence alignment (e.g., VTML80, BLOSUM62).",
 )
 @click.option(
+    "--alignment-min-identity",
+    default=0.0,
+    type=click.FloatRange(0, 1),
+    show_default=True,
+    help="Minimum identity of the global alignment for a structural "
+    "template. 0 disables the filter.",
+)
+@click.option(
+    "--alignment-min-coverage",
+    default=0.0,
+    type=click.FloatRange(0, 1),
+    show_default=True,
+    help="Minimum query coverage of the global alignment for a "
+    "structural template. 0 disables the filter.",
+)
+@click.option(
     "--custom-mapping",
     default=None,
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
@@ -446,16 +462,15 @@ def search_databases(ctx, input, output, db_path, mmseqs_sensitivity,
     "the file will be downloaded automatically to the output directory.",
 )
 @click.pass_context
-def predict_function(ctx, input, db_path, weights, output, processing_modes,
-                     angstrom_contact_thresh, generate_contacts,
-                     mmseqs_sensitivity, mmseqs_min_bitscore,
-                     mmseqs_max_evalue, mmseqs_min_identity,
-                     mmseqs_min_coverage, top_k, alignment_gap_open,
-                     alignment_gap_extend, remove_intermediate, overwrite,
-                     threads, skip_pdb, min_length, max_length, tmpdir,
-                     save_structures, save_cmaps, skip_matrix, scoring_matrix,
-                     custom_mapping, write_metadata, propagate_go_terms,
-                     obo_path):
+def predict_function(
+        ctx, input, db_path, weights, output, processing_modes,
+        angstrom_contact_thresh, generate_contacts, mmseqs_sensitivity,
+        mmseqs_min_bitscore, mmseqs_max_evalue, mmseqs_min_identity,
+        mmseqs_min_coverage, top_k, alignment_gap_open, alignment_gap_extend,
+        remove_intermediate, overwrite, threads, skip_pdb, min_length,
+        max_length, tmpdir, save_structures, save_cmaps, skip_matrix,
+        scoring_matrix, alignment_min_identity, alignment_min_coverage,
+        custom_mapping, write_metadata, propagate_go_terms, obo_path):
     """Predict protein function from sequence."""
 
     logger.info("Starting Metagenomic-DeepFRI.")
@@ -531,7 +546,9 @@ def predict_function(ctx, input, db_path, weights, output, processing_modes,
         write_metadata=write_metadata,
         custom_mapping_file=str(custom_mapping) if custom_mapping else None,
         propagate_go_terms=propagate_go_terms,
-        obo_path=obo_path)
+        obo_path=obo_path,
+        alignment_min_identity=alignment_min_identity,
+        alignment_min_coverage=alignment_min_coverage)
 
 
 @main.command()

@@ -545,6 +545,15 @@ class TestSelectTemplates(unittest.TestCase):
         self.assertEqual({(t.query_name, t.target_name)
                           for t in templates}, {("q1", "low"), ("q2", "t2")})
 
+    @patch("mDeepFRI.pipeline.extract_calpha_coords", side_effect=coords)
+    def test_identity_filter(self, mock_extract_calpha_coords):
+        templates = select_templates(self.query_file,
+                                     self.databases,
+                                     self.alignments,
+                                     min_identity=0.5)
+        self.assertEqual({(t.query_name, t.target_name)
+                          for t in templates}, {("q1", "t1"), ("q2", "t2")})
+
 
 if __name__ == '__main__':
     unittest.main()
