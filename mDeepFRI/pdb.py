@@ -80,12 +80,16 @@ def get_pdb_structure(pdb_id: str,
     Returns:
         str: PDB structure in mmCIF format as a string.
 
+    Raises:
+        requests.RequestException: If the structure cannot be downloaded.
     """
 
     pdb_http = "https://files.rcsb.org/view/{pdb_id}.cif"
     pdb_id = pdb_id.lower()
     url = pdb_http.format(pdb_id=pdb_id)
-    structure = requests.get(url).text
+    response = requests.get(url, timeout=60)
+    response.raise_for_status()
+    structure = response.text
     if save_directory:
         with open(save_directory / f"{pdb_id}.cif", "w") as f:
             f.write(structure)
@@ -110,19 +114,18 @@ def get_pdb_seq_coords(
         Tuple[str, np.ndarray]: A tuple containing a sequence and coordinates of a protein chain.
     """
     pdb_id, chain = pdb_id_chain.split("_")
-    structure = get_pdb_structure(pdb_id, save_directory=save_directory)
 
     try:
+        structure = get_pdb_structure(pdb_id, save_directory=save_directory)
         sequence, coords = extract_residues_coordinates(structure,
                                                         chain=chain,
                                                         filetype="mmcif")
-    except KeyError as e:
+    except (requests.RequestException, KeyError, ValueError) as e:
         sequence, coords = None, None
         pdb_id = pdb_id.upper()
         warnings.warn(
             f"Error extracting residues and coordinates for PDB ID {pdb_id}[Chain {chain}] - "
-            f"non-standard residue {str(e)} present; {query_name} alignment skipped."
-        )
+            f"{e!r}; {query_name} alignment skipped.")
 
     return sequence, coords
 

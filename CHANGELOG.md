@@ -14,6 +14,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - `align_contact_map` returning an asymmetric map for one-directional template contacts
+- runs aborting when a PDB template cannot be downloaded or parsed - the template is now skipped with a warning
 
 ## [1.2.0] - 2026-08-10
 
