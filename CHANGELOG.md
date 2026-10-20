@@ -11,6 +11,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 [Unreleased]: https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/compare/v1.2.0...HEAD
 
+### Changed
+
+- `predict_protein_function` is composed of reusable stages: `align_database_hits`, `select_templates`, `build_contact_maps` and `predict_from_contact_maps`
+
 ### Fixed
 
 - `align_contact_map` returning an asymmetric map for one-directional template contacts

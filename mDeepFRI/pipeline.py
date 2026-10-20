@@ -142,6 +142,44 @@ def load_query_file(query_file: str,
     return query_file
 
 
+def load_databases(databases: Iterable[str] = (),
+                   skip_pdb: bool = False,
+                   overwrite: bool = False,
+                   threads: int = 1) -> List[Database]:
+    """
+    Prepare PDB100 and FoldComp databases for MMseqs2 searches.
+
+    Args:
+        databases (Iterable[str], optional): Paths to FoldComp databases.
+        skip_pdb (bool, optional): Skip the PDB100 database. Defaults to False.
+        overwrite (bool, optional): Rebuild existing database files.
+            Defaults to False.
+        threads (int, optional): Number of threads. Defaults to 1.
+
+    Returns:
+        List[Database]: Databases in search order, PDB100 first.
+    """
+    dbs = []
+    # PDB100 database
+    if not skip_pdb:
+        logger.info("Creating PDB100 database.")
+        pdb100 = create_pdb_mmseqs(threads=threads)
+        dbs.append(pdb100)
+        logger.info("PDB100 database created.")
+
+    for database in databases:
+        database = pathlib.Path(database)
+        db = build_database(
+            input_path=database,
+            output_path=database.parent,
+            overwrite=overwrite,
+            threads=threads,
+        )
+        dbs.append(db)
+
+    return dbs
+
+
 def hierarchical_database_search(query_file: QueryFile,
                                  output_path: str,
                                  databases: Iterable[str] = [],
@@ -224,23 +262,10 @@ def hierarchical_database_search(query_file: QueryFile,
     for idx, seq in query_file.filtered_out.items():
         logger.info(f"Skipping {idx}; sequence length {len(seq)} aa.")
 
-    dbs = []
-    # PDB100 database
-    if not skip_pdb:
-        logger.info("Creating PDB100 database.")
-        pdb100 = create_pdb_mmseqs(threads=threads)
-        dbs.append(pdb100)
-        logger.info("PDB100 database created.")
-
-    for database in databases:
-        database = pathlib.Path(database)
-        db = build_database(
-            input_path=database,
-            output_path=database.parent,
-            overwrite=overwrite,
-            threads=threads,
-        )
-        dbs.append(db)
+    dbs = load_databases(databases=databases,
+                         skip_pdb=skip_pdb,
+                         overwrite=overwrite,
+                         threads=threads)
 
     aligned_total = 0
     pdb_hits = set()
@@ -530,6 +555,197 @@ def _run_prediction_loop(predictor, data_iterable: iter, data_len: int,
         tsv_writer.writerow(out_row)
 
 
+def align_database_hits(databases: Tuple[Database],
+                        alignment_gap_open: float = 10,
+                        alignment_gap_extend: float = 1,
+                        scoring_matrix: str = "VTML80",
+                        threads: int = 1) -> Dict[str, List[AlignmentResult]]:
+    """
+    Globally align queries to their MMseqs2 hits in each database.
+
+    Args:
+        databases (Tuple[Database]): Databases with MMseqs2 results.
+        alignment_gap_open (float, optional): Gap open penalty. Defaults to 10.
+        alignment_gap_extend (float, optional): Gap extension penalty.
+            Defaults to 1.
+        scoring_matrix (str, optional): Scoring matrix. Defaults to "VTML80".
+        threads (int, optional): Number of threads. Defaults to 1.
+
+    Returns:
+        Dict[str, List[AlignmentResult]]: Best-scoring alignment per query,
+            keyed by database name.
+    """
+    alignments = {}
+    for db in databases:
+        alignments[db.name] = align_mmseqs_results(
+            best_matches_filepath=db.mmseqs_result,
+            sequence_db=db.sequence_db,
+            alignment_gap_open=alignment_gap_open,
+            alignment_gap_extend=alignment_gap_extend,
+            threads=threads,
+            scoring_matrix=scoring_matrix)
+        for aln in alignments[db.name]:
+            aln.db_name = db.name
+
+    return alignments
+
+
+def select_templates(query_file: QueryFile,
+                     databases: Tuple[Database],
+                     alignments: Dict[str, List[AlignmentResult]],
+                     structures_path: Optional[pathlib.Path] = None,
+                     threads: int = 1) -> List[AlignmentResult]:
+    """
+    Select one structural template per query, preferring earlier databases.
+
+    Queries whose template coordinates cannot be retrieved fall through to
+    the next database.
+
+    Args:
+        query_file (QueryFile): Query sequences.
+        databases (Tuple[Database]): Databases in order of preference.
+        alignments (Dict[str, List[AlignmentResult]]): Alignments per database
+            from `align_database_hits`.
+        structures_path (Path, optional): Directory to save template
+            structures in, one subdirectory per database. Defaults to None.
+        threads (int, optional): Number of threads. Defaults to 1.
+
+    Returns:
+        List[AlignmentResult]: Templates with C-alpha coordinates.
+    """
+    templates = []
+    for db in databases:
+        templated = {aln.query_name for aln in templates}
+        new_alignments = {
+            aln.query_name: aln
+            for aln in alignments[db.name] if aln.query_name not in templated
+            and aln.query_name in query_file.sequences
+        }
+
+        # remove broken structures
+        if db.name == "highquality_clust30":
+            data_path = pathlib.Path(__file__).parent / "assets"
+            # convert to abspath
+            data_path = data_path.resolve()
+            with open(data_path / "highquality_clust30_error_ids.pkl",
+                      "rb") as f:
+                error_ids = pickle.load(f)
+            # filter out broken structures
+            new_alignments = {
+                query_name: aln
+                for query_name, aln in new_alignments.items()
+                if aln.target_name not in error_ids
+            }
+
+        if not new_alignments:
+            logger.info("No alignments found for %s.", db.name)
+            continue
+
+        query_ids = [aln.query_name for aln in new_alignments.values()]
+        target_ids = [
+            aln.target_name.rsplit(".", 1)[0]
+            for aln in new_alignments.values()
+        ]
+
+        if structures_path:
+            save_dir = structures_path / db.name
+            save_dir.mkdir(parents=True, exist_ok=True)
+        else:
+            save_dir = None
+
+        # extract structural information
+        # in form of C-alpha coordinates
+        coords = extract_calpha_coords(db,
+                                       target_ids,
+                                       query_ids,
+                                       save_directory=save_dir,
+                                       threads=threads)
+
+        for aln, coord in zip(new_alignments.values(), coords):
+            aln.coords = coord
+
+        db_templates = [
+            aln for aln in new_alignments.values() if aln.coords is not None
+        ]
+        templates.extend(db_templates)
+        logger.info("Found templates for %d/%d proteins in %s (%d in total).",
+                    len(db_templates), len(query_file.sequences), db.name,
+                    len(templates))
+
+    return templates
+
+
+def build_contact_maps(
+        templates: List[AlignmentResult],
+        angstrom_contact_threshold: float = 6,
+        generate_contacts: int = 2,
+        threads: int = 1) -> List[Tuple[AlignmentResult, np.ndarray]]:
+    """
+    Transfer template contact maps onto the aligned queries.
+
+    Args:
+        templates (List[AlignmentResult]): Templates from `select_templates`.
+        angstrom_contact_threshold (float, optional): Distance threshold for
+            contacts. Defaults to 6.
+        generate_contacts (int, optional): Number of neighbours connected to
+            residues inserted in the query. Defaults to 2.
+        threads (int, optional): Number of threads. Defaults to 1.
+
+    Returns:
+        List[Tuple[AlignmentResult, np.ndarray]]: Alignments with query
+            contact maps; failed maps are omitted.
+    """
+    partial_map_align = partial(build_align_contact_map,
+                                threshold=angstrom_contact_threshold,
+                                generated_contacts=generate_contacts)
+
+    with Pool(threads) as p:
+        cmaps = list(p.map(partial_map_align, templates))
+
+    return [cmap for cmap in cmaps if cmap[1] is not None]
+
+
+def save_contact_maps(aligned_cmaps: List[Tuple[AlignmentResult, np.ndarray]],
+                      cmap_dir: pathlib.Path) -> None:
+    """
+    Save contact maps as `<query>.npy` files.
+
+    Args:
+        aligned_cmaps (List[Tuple[AlignmentResult, np.ndarray]]): Alignments
+            with query contact maps.
+        cmap_dir (Path): Output directory.
+    """
+    cmap_dir.mkdir(parents=True, exist_ok=True)
+    for aln, cmap in aligned_cmaps:
+        np.save(cmap_dir / f"{aln.query_name}.npy", cmap)
+
+
+def write_alignment_summary(path: pathlib.Path,
+                            aligned_cmaps: List[Tuple[AlignmentResult,
+                                                      np.ndarray]],
+                            unaligned_queries: Iterable[str]) -> None:
+    """
+    Write the template used for each query.
+
+    Args:
+        path (Path): Output TSV file.
+        aligned_cmaps (List[Tuple[AlignmentResult, np.ndarray]]): Alignments
+            with query contact maps.
+        unaligned_queries (Iterable[str]): Queries without a template.
+    """
+    with open(path, "w", encoding="utf-8") as aln_output:
+        tsv_writer = csv.writer(aln_output, delimiter="\t")
+        tsv_writer.writerow(ALIGNMENT_HEADER)
+        for aln, _ in aligned_cmaps:
+            tsv_writer.writerow([
+                aln.query_name, True, aln.target_name, aln.db_name,
+                aln.query_identity, aln.query_coverage, aln.target_coverage
+            ])
+        for query_id in unaligned_queries:
+            tsv_writer.writerow(
+                [query_id, False, np.nan, np.nan, np.nan, np.nan, np.nan])
+
+
 def predict_protein_function(
         query_file: QueryFile,
         databases: Tuple[Database],
@@ -627,11 +843,8 @@ def predict_protein_function(
     deepfri_processing_modes = _initialize_processing_modes(
         deepfri_processing_modes, deepfri_models_config)
 
-    weights = pathlib.Path(weights)
     output_path = pathlib.Path(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
-
-    aligned_cmaps = []
 
     # Use custom mapping if provided, otherwise use hierarchical database search
     if custom_mapping_file:
@@ -648,141 +861,96 @@ def predict_protein_function(
             generate_contacts=generate_contacts,
             threads=threads)
     else:
-        # Standard hierarchical database search
-        for db in databases:
-            # SEQUENCE ALIGNMENT
-            # calculate already aligned sequences
-            alignments = align_mmseqs_results(
-                best_matches_filepath=db.mmseqs_result,
-                sequence_db=db.sequence_db,
-                alignment_gap_open=alignment_gap_open,
-                alignment_gap_extend=alignment_gap_continuation,
-                threads=threads,
-                scoring_matrix=scoring_matrix)
-
-            try:
-                # set a db name for alignments
-                for aln in alignments:
-                    aln.db_name = db.name
-
-                aligned_queries = [aln[0].query_name for aln in aligned_cmaps]
-                new_alignments = {
-                    aln.query_name: aln
-                    for aln in alignments
-                    if aln.query_name not in aligned_queries
-                    and aln.query_name in query_file.sequences
-                }
-
-                # CONTACT MAP ALIGNMENT
-                # initially designed as a separate step
-                # some protein structures in PDB are not formatted correctly
-                # so contact map alignment fails for them
-                # for this cases we replace closest experimental structure with
-                # closest predicted structure if available
-                # if no alignments were found - report
-
-                # remove broken structures
-                if db.name == "highquality_clust30":
-                    data_path = pathlib.Path(__file__).parent / "assets"
-                    # convert to abspath
-                    data_path = data_path.resolve()
-                    with open(data_path / "highquality_clust30_error_ids.pkl",
-                              "rb") as f:
-                        error_ids = pickle.load(f)
-                    # filter out broken structures
-                    new_alignments = {
-                        query_name: aln
-                        for query_name, aln in new_alignments.items()
-                        if aln.target_name not in error_ids
-                    }
-
-                query_ids = [aln.query_name for aln in new_alignments.values()]
-                target_ids = [
-                    aln.target_name.rsplit(".", 1)[0]
-                    for aln in new_alignments.values()
-                ]
-
-                # extract structural information
-                # in form of C-alpha coordinates
-                if save_structures:
-                    save_dir = output_path / "structures" / db.name
-                    save_dir.mkdir(parents=True, exist_ok=True)
-                else:
-                    save_dir = None
-
-                coords = extract_calpha_coords(db,
-                                               target_ids,
-                                               query_ids,
-                                               save_directory=save_dir,
-                                               threads=threads)
-
-                for aln, coord in zip(new_alignments.values(), coords):
-                    aln.coords = coord
-
-            # troubleshoot cases where alignments are empty
-            except IndexError:
-                logger.info("No alignments found for %s.", db.name)
-                new_alignments = {}
-                continue
-
-            # if new alignments are empty - result is empty as well
-            partial_map_align = partial(build_align_contact_map,
-                                        threshold=angstrom_contact_threshold,
-                                        generated_contacts=generate_contacts)
-
-            with Pool(threads) as p:
-                cmaps = list(p.map(partial_map_align, new_alignments.values()))
-
-            # filter errored contact maps
-            # returned as Tuple[AlignmentResult, None] from `retrieve_align_contact_map`
-            partial_cmaps = [cmap for cmap in cmaps if cmap[1] is not None]
-            aligned_cmaps.extend(partial_cmaps)
-            aligned_database = round(
-                len(partial_cmaps) / len(query_file.sequences) * 100, 2)
-            aligned_total = round(
-                len(aligned_cmaps) / len(query_file.sequences) * 100, 2)
-            logger.info(
-                f"Aligned {len(partial_cmaps)}/{len(query_file.sequences)} ({aligned_database}%) "
-                f"proteins against {db.name} [without length ivalid].")
-            logger.info(
-                f"Aligned {len(aligned_cmaps)}/{len(query_file.sequences)} ({aligned_total}%) "
-                "proteins in total [without length invalid].")
+        alignments = align_database_hits(
+            databases,
+            alignment_gap_open=alignment_gap_open,
+            alignment_gap_extend=alignment_gap_continuation,
+            scoring_matrix=scoring_matrix,
+            threads=threads)
+        templates = select_templates(
+            query_file,
+            databases,
+            alignments,
+            structures_path=(output_path /
+                             "structures" if save_structures else None),
+            threads=threads)
+        aligned_cmaps = build_contact_maps(
+            templates,
+            angstrom_contact_threshold=angstrom_contact_threshold,
+            generate_contacts=generate_contacts,
+            threads=threads)
 
     if save_cmaps:
-        cmap_dir = output_path / "contact_maps"
-        cmap_dir.mkdir(parents=True, exist_ok=True)
-        for i, (aln, cmap) in enumerate(aligned_cmaps):
-            cmap_file = cmap_dir / f"{aln.query_name}.npy"
-            np.save(cmap_file, cmap)
+        save_contact_maps(aligned_cmaps, output_path / "contact_maps")
 
-    aligned_queries = [aln[0].query_name for aln in aligned_cmaps]
+    predict_from_contact_maps(query_file,
+                              aligned_cmaps,
+                              deepfri_models_config,
+                              deepfri_processing_modes,
+                              output_path,
+                              threads=threads,
+                              skip_matrix=skip_matrix,
+                              command_str=command_str,
+                              version=version,
+                              write_metadata=write_metadata,
+                              propagate_go_terms=propagate_go_terms,
+                              obo_path=obo_path)
+
+    if remove_intermediate:
+        for db in databases:
+            remove_intermediate_files([db.sequence_db, db.mmseqs_db])
+
+    logger.info("meta-DeepFRI finished successfully.")
+
+
+def predict_from_contact_maps(query_file: QueryFile,
+                              aligned_cmaps: List[Tuple[AlignmentResult,
+                                                        np.ndarray]],
+                              deepfri_models_config: Dict[str, Any],
+                              deepfri_processing_modes: List[str],
+                              output_path: pathlib.Path,
+                              threads: int = 1,
+                              skip_matrix: bool = False,
+                              command_str: Optional[str] = None,
+                              version: Optional[str] = None,
+                              write_metadata: bool = False,
+                              propagate_go_terms: bool = False,
+                              obo_path: Optional[str] = None) -> None:
+    """
+    Predict GO terms and write alignment_summary.tsv, prediction matrices and
+    results.tsv.
+
+    Queries with a contact map are predicted with the GCN, all other queries
+    with the CNN.
+
+    Args:
+        query_file (QueryFile): Query sequences.
+        aligned_cmaps (List[Tuple[AlignmentResult, np.ndarray]]): Alignments
+            with query contact maps.
+        deepfri_models_config (Dict[str, Any]): Loaded model configuration.
+        deepfri_processing_modes (List[str]): Modes to predict.
+        output_path (Path): Output directory.
+        threads (int, optional): Number of threads. Defaults to 1.
+        skip_matrix (bool, optional): Skip writing prediction matrices.
+            Defaults to False.
+        command_str (str, optional): Command line written with metadata.
+        version (str, optional): Version written with metadata.
+        write_metadata (bool, optional): Prepend '##' metadata lines to
+            results.tsv. Defaults to False.
+        propagate_go_terms (bool, optional): Write propagated GO terms to
+            results_propagated.tsv. Defaults to False.
+        obo_path (str, optional): Path to go-basic.obo; downloaded if None.
+    """
+    aligned_queries = {aln.query_name for aln, _ in aligned_cmaps}
     unaligned_queries = {
         query_id: seq
         for query_id, seq in query_file.sequences.items()
         if query_id not in aligned_queries
     }
 
-    if custom_mapping_file and unaligned_queries:
-        logger.info(
-            "Predicting %d protein(s) with CNN (sequence-only): %s",
-            len(unaligned_queries),
-            ", ".join(unaligned_queries.keys()),
-        )
-
-    # WRITE ALIGNMENT RESULTS
     alignment_results_file = output_path / "alignment_summary.tsv"
-
-    with open(alignment_results_file, "w", encoding="utf-8") as aln_output:
-        tsv_writer = csv.writer(aln_output, delimiter="\t")
-        tsv_writer.writerow(ALIGNMENT_HEADER)
-        for aln, _ in aligned_cmaps:
-            tsv_writer.writerow([
-                aln.query_name, True, aln.target_name, aln.db_name,
-                aln.query_identity, aln.query_coverage, aln.target_coverage
-            ])
-        for query_id in unaligned_queries:
-            tsv_writer.writerow(
-                [query_id, False, np.nan, np.nan, np.nan, np.nan, np.nan])
+    write_alignment_summary(alignment_results_file, aligned_cmaps,
+                            unaligned_queries)
 
     ### FUNCTION PREDICTION ###
     # sort cmaps by length of query sequence
@@ -1049,9 +1217,3 @@ def predict_protein_function(
             output_path=propagated_output,
             obo_path=obo_file,
         )
-
-    if remove_intermediate:
-        for db in databases:
-            remove_intermediate_files([db.sequence_db, db.mmseqs_db])
-
-    logger.info("meta-DeepFRI finished successfully.")

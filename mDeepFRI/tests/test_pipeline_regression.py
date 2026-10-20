@@ -5,9 +5,10 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 
+from mDeepFRI.alignment import AlignmentResult
 from mDeepFRI.database import Database
 from mDeepFRI.pipeline import (FINAL_OUTPUT_HEADER, QueryFile,
-                               predict_protein_function)
+                               predict_protein_function, select_templates)
 
 
 class TestPipelineRegression(unittest.TestCase):
@@ -508,6 +509,41 @@ class TestPipelineRegression(unittest.TestCase):
                     header_index = 0
                 self.assertEqual(lines[header_index].split("\t"),
                                  FINAL_OUTPUT_HEADER)
+
+
+class TestSelectTemplates(unittest.TestCase):
+    def setUp(self):
+        self.query_file = QueryFile(filepath="query.faa")
+        self.query_file.sequences = {"q1": "AAA", "q2": "AAA"}
+        self.databases = [MagicMock(spec=Database), MagicMock(spec=Database)]
+        self.databases[0].name = "db1"
+        self.databases[1].name = "db2"
+
+        def alignment(query, target, identity):
+            return AlignmentResult(query, "AAA", target, "AAA", "MMM",
+                                   identity, 1.0, 1.0)
+
+        self.alignments = {
+            "db1":
+            [alignment("q1", "low", 0.4),
+             alignment("q2", "broken", 0.9)],
+            "db2": [alignment("q1", "t1", 0.8),
+                    alignment("q2", "t2", 0.9)],
+        }
+
+    @staticmethod
+    def coords(db, targets, queries, **kwargs):
+        return [
+            None if target == "broken" else np.zeros((3, 3))
+            for target in targets
+        ]
+
+    @patch("mDeepFRI.pipeline.extract_calpha_coords", side_effect=coords)
+    def test_fallthrough_to_next_database(self, mock_extract_calpha_coords):
+        templates = select_templates(self.query_file, self.databases,
+                                     self.alignments)
+        self.assertEqual({(t.query_name, t.target_name)
+                          for t in templates}, {("q1", "low"), ("q2", "t2")})
 
 
 if __name__ == '__main__':
