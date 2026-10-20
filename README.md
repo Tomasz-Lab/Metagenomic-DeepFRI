@@ -335,6 +335,30 @@ Templates whose global alignment to the query falls below
 and the query falls back to the next database or the CNN.
 Both filters are off by default.
 
+### 7. Benchmarking
+
+`mDeepFRI benchmark` measures how the similarity of the structural template
+affects contact maps and predictions. Every database is searched once with
+every query. For each `--identity-bin LOW HIGH` (MMseqs2 identity, `HIGH`
+exclusive) one hit is kept per query and database - the best by bitscore,
+or a random one with `--hit-selection random --seed 42` - and hits of a
+query to itself are dropped unless `--keep-self-hits` is set. Contact maps
+are built for every `--generate-contacts` value and, if weights are given,
+GO terms are predicted. `--search-results` reuses the `database_search`
+folder of a previous run.
+
+```{code-block} bash
+mDeepFRI benchmark -i /path/to/protein/sequences \
+  -d /path/to/foldcomp/database/ -w /path/to/deepfri/weights/folder \
+  -o /output_path -p mf -p bp -p cc \
+  --identity-bin 0 0.5 --identity-bin 0 0.9 --identity-bin 0 1.01
+```
+
+The output contains `database_search/` with all MMseqs2 hits, `timing.tsv`
+with the wall time of each stage and, per identity bin, the selected `hits/`,
+their global `alignments/` with gapped sequences and one
+`generate_contacts_<value>/` folder with the `predict-function` outputs.
+
 ## 🔖 Citations
 
 Metagenomic-DeepFRI is a scientific software. If you use it

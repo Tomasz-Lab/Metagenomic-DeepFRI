@@ -4,6 +4,7 @@ Command-line interface for Metagenomic-DeepFRI.
 This module provides the Click-based CLI for the Metagenomic-DeepFRI pipeline,
 including commands for:
 - Protein function prediction (predict-function)
+- Benchmarking of structure retrieval (benchmark)
 - Model weight downloading (get-models)
 - Utility operations (calculate-contact-map)
 
@@ -14,6 +15,7 @@ Commands:
     cli: Main command group
     get_models: Download DeepFRI model weights
     predict_function: Run protein function prediction pipeline
+    benchmark: Run the pipeline over identity bins of database hits
     calculate_contact_map: Generate contact map from structure file
 
 Functions:
@@ -34,6 +36,7 @@ from click._compat import get_text_stderr
 from click.exceptions import UsageError
 from click.utils import echo
 
+from mDeepFRI.benchmark import run_benchmark
 from mDeepFRI.bio_utils import (calculate_contact_map,
                                 get_residues_coordinates, load_structure)
 from mDeepFRI.pipeline import (hierarchical_database_search, load_query_file,
@@ -131,13 +134,6 @@ def search_options(function):
         help="Overwrite existing files.",
     )
     @click.option(
-        "--top-k",
-        default=5,
-        type=int,
-        show_default=True,
-        help="Number of top MMseqs2 hits to save.",
-    )
-    @click.option(
         "--mmseqs-min-coverage",
         default=0.9,
         type=float,
@@ -213,6 +209,99 @@ def search_options(function):
                         readable=True,
                         path_type=Path),
         help="Path to an input protein sequences (FASTA file, may be gzipped).",
+    )
+    @wraps(function)
+    def wrapper(*args, **kwargs):
+        return function(*args, **kwargs)
+
+    return wrapper
+
+
+top_k_option = click.option(
+    "--top-k",
+    default=5,
+    type=int,
+    show_default=True,
+    help="Number of top MMseqs2 hits to save.",
+)
+
+
+def prediction_options(function):
+    """
+    A decorator to apply click options for contact map
+    construction and function prediction to a command.
+    """
+    @click.option(
+        "-p",
+        "--processing-modes",
+        default=["bp", "cc", "ec", "mf"],
+        type=click.Choice(["bp", "cc", "ec", "mf"]),
+        multiple=True,
+        help="Processing modes. Default is all"
+        "(biological process, cellular component, enzyme comission, molecular function).",
+    )
+    @click.option(
+        "-a",
+        "--angstrom-contact-thresh",
+        default=6,
+        type=float,
+        help="Angstrom contact threshold. Default is 6.",
+    )
+    @click.option(
+        "--alignment-gap-open",
+        default=10,
+        type=int,
+        help="Gap open penalty for contact map alignment.",
+    )
+    @click.option(
+        "--alignment-gap-extend",
+        default=1,
+        type=int,
+        help="Gap extend penalty for contact map alignment.",
+    )
+    @click.option(
+        "--alignment-min-identity",
+        default=0.0,
+        type=click.FloatRange(0, 1),
+        show_default=True,
+        help="Minimum identity of the global alignment for a structural "
+        "template. 0 disables the filter.",
+    )
+    @click.option(
+        "--alignment-min-coverage",
+        default=0.0,
+        type=click.FloatRange(0, 1),
+        show_default=True,
+        help="Minimum query coverage of the global alignment for a "
+        "structural template. 0 disables the filter.",
+    )
+    @click.option(
+        "--save-structures",
+        default=False,
+        type=bool,
+        is_flag=True,
+        help="Save structures of the top hits.",
+    )
+    @click.option(
+        "--save-cmaps",
+        default=False,
+        type=bool,
+        is_flag=True,
+        help="Save contact maps of the top hits.",
+    )
+    @click.option(
+        "--skip-matrix",
+        default=False,
+        type=bool,
+        is_flag=True,
+        help="Skip writing prediction matrix files (saves disk space).",
+    )
+    @click.option(
+        "--scoring-matrix",
+        default="VTML80",
+        type=str,
+        show_default=True,
+        help="Scoring matrix for sequence alignment (e.g., VTML80, BLOSUM62).",
     )
     @wraps(function)
     def wrapper(*args, **kwargs):
@@ -302,6 +391,7 @@ def generate_config(weights_path, version):
 
 @main.command
 @search_options
+@top_k_option
 @click.pass_context
 def search_databases(ctx, input, output, db_path, mmseqs_sensitivity,
                      min_length, max_length, mmseqs_min_bitscore,
@@ -336,6 +426,8 @@ def search_databases(ctx, input, output, db_path, mmseqs_sensitivity,
 
 @main.command()
 @search_options
+@top_k_option
+@prediction_options
 @click.option(
     "-w",
     "--weights",
@@ -347,38 +439,10 @@ def search_databases(ctx, input, output, db_path, mmseqs_sensitivity,
     help="Path to a folder containing model weights.",
 )
 @click.option(
-    "-p",
-    "--processing-modes",
-    default=["bp", "cc", "ec", "mf"],
-    type=click.Choice(["bp", "cc", "ec", "mf"]),
-    multiple=True,
-    help="Processing modes. Default is all"
-    "(biological process, cellular component, enzyme comission, molecular function).",
-)
-@click.option(
-    "-a",
-    "--angstrom-contact-thresh",
-    default=6,
-    type=float,
-    help="Angstrom contact threshold. Default is 6.",
-)
-@click.option(
     "--generate-contacts",
     default=2,
     type=int,
     help="Gap fill threshold during contact map alignment.",
-)
-@click.option(
-    "--alignment-gap-open",
-    default=10,
-    type=int,
-    help="Gap open penalty for contact map alignment.",
-)
-@click.option(
-    "--alignment-gap-extend",
-    default=1,
-    type=int,
-    help="Gap extend penalty for contact map alignment.",
 )
 @click.option(
     "--remove-intermediate",
@@ -386,50 +450,6 @@ def search_databases(ctx, input, output, db_path, mmseqs_sensitivity,
     type=bool,
     is_flag=True,
     help="Remove intermediate files.",
-)
-@click.option(
-    "--save-structures",
-    default=False,
-    type=bool,
-    is_flag=True,
-    help="Save structures of the top hits.",
-)
-@click.option(
-    "--save-cmaps",
-    default=False,
-    type=bool,
-    is_flag=True,
-    help="Save contact maps of the top hits.",
-)
-@click.option(
-    "--skip-matrix",
-    default=False,
-    type=bool,
-    is_flag=True,
-    help="Skip writing prediction matrix files (saves disk space).",
-)
-@click.option(
-    "--scoring-matrix",
-    default="VTML80",
-    type=str,
-    show_default=True,
-    help="Scoring matrix for sequence alignment (e.g., VTML80, BLOSUM62).",
-)
-@click.option(
-    "--alignment-min-identity",
-    default=0.0,
-    type=click.FloatRange(0, 1),
-    show_default=True,
-    help="Minimum identity of the global alignment for a structural "
-    "template. 0 disables the filter.",
-)
-@click.option(
-    "--alignment-min-coverage",
-    default=0.0,
-    type=click.FloatRange(0, 1),
-    show_default=True,
-    help="Minimum query coverage of the global alignment for a "
-    "structural template. 0 disables the filter.",
 )
 @click.option(
     "--custom-mapping",
@@ -549,6 +569,124 @@ def predict_function(
         obo_path=obo_path,
         alignment_min_identity=alignment_min_identity,
         alignment_min_coverage=alignment_min_coverage)
+
+
+@main.command(context_settings={"default_map": {"mmseqs_min_identity": 0.0}})
+@search_options
+@prediction_options
+@click.option(
+    "-w",
+    "--weights",
+    default=None,
+    type=click.Path(exists=True,
+                    dir_okay=True,
+                    file_okay=False,
+                    path_type=Path),
+    help="Path to a folder containing model weights. "
+    "Without weights, only contact maps are built.",
+)
+@click.option(
+    "--generate-contacts",
+    default=[2],
+    type=int,
+    multiple=True,
+    show_default=True,
+    help="Gap fill threshold during contact map alignment. "
+    "Can be given multiple times.",
+)
+@click.option(
+    "--identity-bin",
+    default=[(0.0, 1.01)],
+    type=(float, float),
+    multiple=True,
+    show_default=True,
+    help="MMseqs2 identity range LOW HIGH of the hits, LOW inclusive and "
+    "HIGH exclusive. Can be given multiple times.",
+)
+@click.option(
+    "--hit-selection",
+    default="bitscore",
+    type=click.Choice(["bitscore", "random"]),
+    show_default=True,
+    help="Keep the hit with the highest bitscore or a random hit "
+    "per query, database and identity bin.",
+)
+@click.option(
+    "--seed",
+    default=0,
+    type=int,
+    show_default=True,
+    help="Random seed for --hit-selection random.",
+)
+@click.option(
+    "--drop-self-hits/--keep-self-hits",
+    default=True,
+    show_default=True,
+    help="Discard hits to the query itself, e.g. its own AlphaFold model.",
+)
+@click.option(
+    "--search-results",
+    default=None,
+    type=click.Path(exists=True,
+                    file_okay=False,
+                    dir_okay=True,
+                    path_type=Path),
+    help="Directory with <db>_results.tsv files of a previous benchmark, "
+    "used instead of searching the databases.",
+)
+@click.pass_context
+def benchmark(ctx, input, output, db_path, weights, processing_modes,
+              angstrom_contact_thresh, generate_contacts, mmseqs_sensitivity,
+              mmseqs_min_bitscore, mmseqs_max_evalue, mmseqs_min_identity,
+              mmseqs_min_coverage, alignment_gap_open, alignment_gap_extend,
+              alignment_min_identity, alignment_min_coverage, overwrite,
+              threads, skip_pdb, min_length, max_length, tmpdir,
+              save_structures, save_cmaps, skip_matrix, scoring_matrix,
+              identity_bin, hit_selection, seed, drop_self_hits,
+              search_results):
+    """
+    Benchmark structure retrieval over identity bins of MMseqs2 hits.
+
+    Every database is searched with every query once. Each identity bin keeps
+    one hit per query and database, and contact maps are built and used for
+    prediction for every --generate-contacts value.
+    """
+
+    log_command_params(ctx)
+
+    query_file = load_query_file(query_file=input,
+                                 min_length=min_length,
+                                 max_length=max_length)
+
+    run_benchmark(query_file,
+                  output,
+                  databases=db_path,
+                  identity_bins=identity_bin,
+                  generate_contacts=generate_contacts,
+                  weights=weights,
+                  deepfri_processing_modes=processing_modes,
+                  search_results=search_results,
+                  skip_pdb=skip_pdb,
+                  overwrite=overwrite,
+                  mmseqs_sensitivity=mmseqs_sensitivity,
+                  min_bits=mmseqs_min_bitscore,
+                  max_eval=mmseqs_max_evalue,
+                  min_ident=mmseqs_min_identity,
+                  min_coverage=mmseqs_min_coverage,
+                  selection=hit_selection,
+                  drop_self_hits=drop_self_hits,
+                  seed=seed,
+                  alignment_gap_open=alignment_gap_open,
+                  alignment_gap_extend=alignment_gap_extend,
+                  scoring_matrix=scoring_matrix,
+                  alignment_min_identity=alignment_min_identity,
+                  alignment_min_coverage=alignment_min_coverage,
+                  angstrom_contact_threshold=angstrom_contact_thresh,
+                  save_structures=save_structures,
+                  save_cmaps=save_cmaps,
+                  skip_matrix=skip_matrix,
+                  tmpdir=tmpdir,
+                  threads=threads)
 
 
 @main.command()

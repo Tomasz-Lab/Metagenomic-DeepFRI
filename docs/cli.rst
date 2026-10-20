@@ -1,10 +1,11 @@
 Commands (CLI)
 ==============
 
-The ``mDeepFRI`` command-line interface provides two main commands:
+The ``mDeepFRI`` command-line interface provides three main commands:
 
 - ``get-models`` - Download pre-trained DeepFRI models (v1.0 or v1.1)
 - ``predict-function`` - Run the prediction pipeline on protein sequences
+- ``benchmark`` - Evaluate structure retrieval and prediction across identity bins of database hits
 
 Key Features
 ------------
