@@ -11,6 +11,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 [Unreleased]: https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/compare/v1.2.0...HEAD
 
+### Fixed
+
+- `align_contact_map` returning an asymmetric map for one-directional template contacts
+
 ## [1.2.0] - 2026-08-10
 
 [1.2.0]: https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/compare/v1.1.10...v1.2.0
