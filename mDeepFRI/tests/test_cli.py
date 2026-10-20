@@ -43,3 +43,46 @@ class TestCLI(unittest.TestCase):
             self.assertEqual(result.exit_code, 0, result.exception)
             self.assertTrue(
                 (Path(output) / "pdb100_230517_results.tsv").exists())
+
+    def test_benchmark_without_weights(self):
+        """Test that benchmark builds contact maps for every bin and setting."""
+        query = Path(__file__).parent / "data" / "small_query.faa"
+        args = ["benchmark", "-i", str(query), "--save-cmaps"]
+        with TemporaryDirectory() as tmp:
+            output = Path(tmp) / "benchmark"
+            result = self.runner.invoke(
+                main, args + [
+                    "-o",
+                    str(output), "--identity-bin", "0", "0.5",
+                    "--identity-bin", "0.5", "1.01", "--generate-contacts",
+                    "0", "--generate-contacts", "2"
+                ])
+            self.assertEqual(result.exit_code, 0, result.exception)
+
+            bin_path = output / "identity_bin_0.50-1.01"
+            for path in [
+                    output / "timing.tsv",
+                    output / "database_search" / "pdb100_230517_results.tsv",
+                    bin_path / "hits" / "pdb100_230517.tsv",
+                    bin_path / "alignments" / "pdb100_230517.tsv",
+                    output / "identity_bin_0.00-0.50" / "generate_contacts_0" /
+                    "alignment_summary.tsv"
+            ]:
+                self.assertTrue(path.exists(), path)
+            self.assertTrue(
+                list((bin_path / "generate_contacts_2" /
+                      "contact_maps").glob("*.npy")))
+
+            rerun = Path(tmp) / "rerun"
+            result = self.runner.invoke(
+                main, args + [
+                    "-o",
+                    str(rerun), "--identity-bin", "0.5", "1.01",
+                    "--search-results",
+                    str(output / "database_search")
+                ])
+            self.assertEqual(result.exit_code, 0, result.exception)
+            hits = Path(
+                "identity_bin_0.50-1.01") / "hits" / "pdb100_230517.tsv"
+            self.assertEqual((output / hits).read_text(),
+                             (rerun / hits).read_text())

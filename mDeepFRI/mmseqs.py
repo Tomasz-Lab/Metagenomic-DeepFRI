@@ -44,6 +44,10 @@ from mDeepFRI.utils import retrieve_fasta_entries_as_dict, run_command
 
 MMSEQS_PATH = Path(mDeepFRI.__path__[0]).parent / "mmseqs" / "bin" / "mmseqs"
 FOLDCOMP_PATH = Path(mDeepFRI.__path__[0]).parent / "foldcomp_bin"
+MMSEQS_COLUMNS = [
+    "query", "target", "fident", "alnlen", "mismatch", "gapopen", "qstart",
+    "qend", "tstart", "tend", "qcov", "tcov", "evalue", "bits"
+]
 STRING_COLUMNS = ("query", "target", "query_file", "database_file")
 
 
@@ -195,11 +199,7 @@ def _convertalis(query_db: str,
                  threads: int,
                  columns: list[str] | None = None):
     if columns is None:
-        columns = [
-            "query", "target", "fident", "alnlen", "mismatch", "gapopen",
-            "qstart", "qend", "tstart", "tend", "qcov", "tcov", "evalue",
-            "bits"
-        ]
+        columns = MMSEQS_COLUMNS
     args = ",".join(columns)
     run_command(
         f"{MMSEQS_PATH} convertalis {query_db} {target_db} {result_db} {output_file} --format-mode 4 "
@@ -370,13 +370,14 @@ class MMseqsResult(np.recarray):
         return self.apply_mask(mask)
 
     def find_best_matches(self,
-                          k: int = 5,
+                          k: Optional[int] = 5,
                           threads: int = 1) -> "MMseqsResult":
         """
         Selects k best matches for each query sequence based on bit score and identity.
 
         Args:
-            k (int): Number of best matches to select.
+            k (int, optional): Number of best matches to select. If None, all
+                matches are kept.
             threads (int): Number of threads to use.
 
         Returns:
@@ -388,6 +389,10 @@ class MMseqsResult(np.recarray):
         # sort by bit score
         self.result_arr.sort(order=["query", "bits", "fident"],
                              kind="quicksort")
+
+        if k is None:
+            return MMseqsResult(self.result_arr[::-1], self.query_fasta,
+                                self.database)
 
         select_top = partial(select_top_k, db=self.result_arr[::-1], k=k)
         # select k best hits

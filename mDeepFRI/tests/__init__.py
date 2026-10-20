@@ -1,11 +1,12 @@
-from . import (test_alignment, test_bio_utils, test_cli, test_conctact_map,
-               test_contact_map_utils, test_go2cog_mapping, test_install,
-               test_mmseqs, test_pdb, test_pipeline_regression, test_predict,
-               test_utils, test_vocabulary_mismatch)
+from . import (test_alignment, test_benchmark, test_bio_utils, test_cli,
+               test_conctact_map, test_contact_map_utils, test_go2cog_mapping,
+               test_install, test_mmseqs, test_pdb, test_pipeline_regression,
+               test_predict, test_utils, test_vocabulary_mismatch)
 
 
 def load_tests(loader, suite, pattern):
     suite.addTests(loader.loadTestsFromModule(test_alignment))
+    suite.addTests(loader.loadTestsFromModule(test_benchmark))
     suite.addTests(loader.loadTestsFromModule(test_bio_utils))
     suite.addTests(loader.loadTestsFromModule(test_cli))
     suite.addTests(loader.loadTestsFromModule(test_conctact_map))
