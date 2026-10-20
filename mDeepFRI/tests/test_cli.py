@@ -1,4 +1,6 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from click.testing import CliRunner
 
@@ -30,3 +32,14 @@ class TestCLI(unittest.TestCase):
         result = self.runner.invoke(main, ["predict-function", "--help"])
         self.assertEqual(result.exit_code, 0)
         self.assertIn("--custom-mapping", result.output)
+
+    def test_search_databases(self):
+        """Test that search-databases runs a PDB100 search."""
+        query = Path(__file__).parent / "data" / "small_query.faa"
+        with TemporaryDirectory() as output:
+            result = self.runner.invoke(
+                main, ["search-databases", "-i",
+                       str(query), "-o", output])
+            self.assertEqual(result.exit_code, 0, result.exception)
+            self.assertTrue(
+                (Path(output) / "pdb100_230517_results.tsv").exists())

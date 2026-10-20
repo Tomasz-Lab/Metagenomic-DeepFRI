@@ -304,8 +304,9 @@ def generate_config(weights_path, version):
 @search_options
 @click.pass_context
 def search_databases(ctx, input, output, db_path, mmseqs_sensitivity,
-                     min_length, max_length, min_bits, max_eval, min_ident,
-                     min_coverage, top_k, overwrite, threads, skip_pdb,
+                     min_length, max_length, mmseqs_min_bitscore,
+                     mmseqs_max_evalue, mmseqs_min_identity,
+                     mmseqs_min_coverage, top_k, overwrite, threads, skip_pdb,
                      tmpdir):
     """
     Hierarchically search FoldComp databases for similar proteins with
@@ -322,12 +323,10 @@ def search_databases(ctx, input, output, db_path, mmseqs_sensitivity,
                                  databases=db_path,
                                  output_path=output,
                                  mmseqs_sensitivity=mmseqs_sensitivity,
-                                 min_seq_len=min_length,
-                                 max_seq_len=max_length,
-                                 min_bits=min_bits,
-                                 max_eval=max_eval,
-                                 min_ident=min_ident,
-                                 min_coverage=min_coverage,
+                                 min_bits=mmseqs_min_bitscore,
+                                 max_eval=mmseqs_max_evalue,
+                                 min_ident=mmseqs_min_identity,
+                                 min_coverage=mmseqs_min_coverage,
                                  top_k=top_k,
                                  skip_pdb=skip_pdb,
                                  overwrite=overwrite,
