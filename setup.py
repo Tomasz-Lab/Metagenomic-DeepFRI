@@ -63,20 +63,24 @@ def _detect_cpu_features():
         return "sse2"
 
 
+MMSEQS_ARCHIVE = ("https://mmseqs.com/archive/"
+                  "bd01c2229f027d8d8e61947f44d11ef1a7669212")
+FOLDCOMP_RELEASE = ("https://github.com/steineggerlab/foldcomp/releases/"
+                    "download/v1.0.0")
+
 FOLDCOMP_BINARIES = {
-    "linux_or_android":
-    "https://mmseqs.com/foldcomp/foldcomp-linux-x86_64.tar.gz",
-    "aarch64": "https://mmseqs.com/foldcomp/foldcomp-linux-arm64.tar.gz",
-    "macos": "https://mmseqs.com/foldcomp/foldcomp-macos-universal.tar.gz"
+    "linux_or_android": f"{FOLDCOMP_RELEASE}/foldcomp-linux-x86_64.tar.gz",
+    "aarch64": f"{FOLDCOMP_RELEASE}/foldcomp-linux-arm64.tar.gz",
+    "macos": f"{FOLDCOMP_RELEASE}/foldcomp-macos-universal.tar.gz"
 }
 
 MMSEQS_BINARIES = {
-    "avx2": "https://mmseqs.com/latest/mmseqs-linux-avx2.tar.gz",
-    "sse41": "https://mmseqs.com/latest/mmseqs-linux-sse41.tar.gz",
-    "sse2": "https://mmseqs.com/latest/mmseqs-linux-sse2.tar.gz",
-    "aarch64": "https://mmseqs.com/latest/mmseqs-linux-arm64.tar.gz",
-    "ppc": "https://mmseqs.com/latest/mmseqs-linux-ppc64le-power9.tar.gz",
-    "macos": "https://mmseqs.com/latest/mmseqs-osx-universal.tar.gz"
+    "avx2": f"{MMSEQS_ARCHIVE}/mmseqs-linux-avx2.tar.gz",
+    "sse41": f"{MMSEQS_ARCHIVE}/mmseqs-linux-sse41.tar.gz",
+    "sse2": f"{MMSEQS_ARCHIVE}/mmseqs-linux-sse2.tar.gz",
+    "aarch64": f"{MMSEQS_ARCHIVE}/mmseqs-linux-arm64.tar.gz",
+    "ppc": f"{MMSEQS_ARCHIVE}/mmseqs-linux-ppc64le-power9.tar.gz",
+    "macos": f"{MMSEQS_ARCHIVE}/mmseqs-osx-universal.tar.gz"
 }
 
 
