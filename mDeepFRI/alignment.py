@@ -19,6 +19,7 @@ Functions:
     align_mmseqs_results: Align all MMseqs2 hits to their targets.
 """
 
+import platform
 import warnings
 from functools import partial
 from multiprocessing import Pool
@@ -33,6 +34,11 @@ from mDeepFRI.utils import (load_fasta_as_dict, retrieve_fasta_entries_as_dict,
                             stdout_warn)
 
 warnings.showwarning = stdout_warn
+
+# PyOpal's macOS arm64 wheels are cross-compiled on x86-64 runners and
+# do not enable their NEON backend at runtime.
+if platform.machine() == "arm64" and pyopal.lib._NEON_BUILD_SUPPORT:
+    pyopal.lib._NEON_RUNTIME_SUPPORT = True
 
 
 def insert_gaps(sequence: str, reference: str,
