@@ -66,7 +66,7 @@ def _detect_cpu_features():
 MMSEQS_ARCHIVE = ("https://mmseqs.com/archive/"
                   "bd01c2229f027d8d8e61947f44d11ef1a7669212")
 FOLDCOMP_RELEASE = ("https://github.com/steineggerlab/foldcomp/releases/"
-                    "download/v1.0.0")
+                    "download/v0.1.0")
 
 FOLDCOMP_BINARIES = {
     "linux_or_android": f"{FOLDCOMP_RELEASE}/foldcomp-linux-x86_64.tar.gz",
