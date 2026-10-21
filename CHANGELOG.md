@@ -13,7 +13,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- wheels for Linux (x86-64, aarch64) and macOS on Apple Silicon, Python 3.11 - 3.14
+- wheels for Linux x86-64 and macOS on Apple Silicon, Python 3.11 - 3.14
 - `--alignment-min-identity` and `--alignment-min-coverage` parameters - discard structural templates whose global alignment falls below the thresholds; off by default
 - `benchmark` command - runs structure retrieval, contact map transfer and prediction for several MMseqs2 identity bins and `--generate-contacts` values from one database search, with per-stage wall times in `timing.tsv`
 

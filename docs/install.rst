@@ -11,8 +11,9 @@ Requirements
 
 - **Python**: >= 3.11 (tested with 3.11 - 3.14)
 - **Dependencies**: Automatically installed via pip
-- **Wheels**: Linux (x86-64, aarch64) and macOS 14+ on Apple Silicon. On other platforms pip builds
-  from source, which needs a C++ compiler with OpenMP (``brew install libomp`` on macOS).
+- **Wheels**: Linux x86-64 and macOS 14+ on Apple Silicon. On Intel Macs pip builds from source,
+  which needs a C++ compiler with OpenMP (``brew install libomp``). Linux aarch64 is not supported,
+  as the ``foldcomp`` dependency publishes no aarch64 wheels and its source distribution does not build.
   Linux x86-64 wheels bundle the AVX2 build of MMseqs2; on CPUs without AVX2 install with
   ``pip install --no-binary mdeepfri mdeepfri``.
 

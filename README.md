@@ -64,9 +64,9 @@ with `MMseqs2`.
 
 ## 🔧 Installation
 
-1\. Install from PyPI (Python 3.11 - 3.14). Wheels are available for Linux
-(x86-64, aarch64) and macOS 14+ on Apple Silicon. On other platforms pip builds
-from source, which needs a C++ compiler with OpenMP (`brew install libomp` on macOS).
+1\. Install from PyPI (Python 3.11 - 3.14). Wheels are available for Linux x86-64
+and macOS 14+ on Apple Silicon. On Intel Macs pip builds from source, which needs
+a C++ compiler with OpenMP (`brew install libomp`).
 
 ```{code-block} bash
 pip install mdeepfri
