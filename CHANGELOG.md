@@ -19,6 +19,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - support for Python 3.13 and 3.14; `requires-python` no longer has an upper bound
+- `biotite`, `foldcomp`, `obonet` and `networkx` are bounded below their next major release
 - `predict_protein_function` is composed of reusable stages: `align_database_hits`, `select_templates`, `build_contact_maps` and `predict_from_contact_maps`
 
 ### Fixed

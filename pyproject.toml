@@ -27,14 +27,14 @@ classifiers = [
 dependencies = [
     "click ~=8.0",
     "numpy ~=2.3",
-    "biotite >=1.3",
+    "biotite >=1.3,<3",
     "pysam >=0.18",
     "pyopal ~=0.7",
-    "foldcomp",
+    "foldcomp >=0.1,<2",
     "tqdm",
     "onnxruntime ~=1.26.0",
-    "obonet >=0.3",
-    "networkx >=2.6",
+    "obonet >=0.3,<2",
+    "networkx >=2.6,<4",
 ]
 
 [project.urls]
