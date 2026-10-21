@@ -21,6 +21,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - support for Python 3.13 and 3.14; `requires-python` no longer has an upper bound
 - `biotite`, `foldcomp`, `obonet` and `networkx` are bounded below their next major release
+- PDB100 is downloaded from opendata.mmseqs.org instead of wwwuser.gwdg.de, which refuses connections from some networks; the file is identical
 - MMseqs2 is pinned to build `bd01c22` and FoldComp to v0.1.0 instead of the latest nightly builds
 - `predict_protein_function` is composed of reusable stages: `align_database_hits`, `select_templates`, `build_contact_maps` and `predict_from_contact_maps`
 
@@ -31,6 +32,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - MMseqs2 results with a single hit, no hits or numeric-like identifiers - identifiers stay strings and empty results keep their header
 - `search-databases` failing on unexpected keyword arguments
 - test data missing from the package, failing `python -m unittest mDeepFRI.tests` on an installed copy
+- downloads hanging indefinitely when a host does not respond
 - installs on macOS bundling a Linux MMseqs2 binary, Linux aarch64 installs bundling an x86-64 FoldComp binary, and a dead MMseqs2 URL for ppc64le
 
 ## [1.2.0] - 2026-08-10

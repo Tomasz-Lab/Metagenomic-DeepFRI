@@ -89,7 +89,7 @@ def read(fname):
 
 
 def _download_file(url, path):
-    with requests.get(url, stream=True) as r:
+    with requests.get(url, stream=True, timeout=60) as r:
         r.raise_for_status()
         with open(path, 'wb') as f:
             shutil.copyfileobj(r.raw, f)

@@ -31,7 +31,7 @@ def create_pdb_mmseqs(threads: int = 1):
         Database: PDB100 database.
     """
 
-    PDB100 = "https://wwwuser.gwdg.de/~compbiol/colabfold/pdb100_230517.fasta.gz"
+    PDB100 = "https://opendata.mmseqs.org/colabfold/pdb100_230517.fasta.gz"
     # check if pdb exists in a build dir
     build_dir = Path(mDeepFRI.__path__[0]).parent
     pdb100_path = Path(build_dir / "pdb100_230517.fasta.gz")
