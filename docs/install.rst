@@ -9,8 +9,12 @@ Installation
 Requirements
 ------------
 
-- **Python**: >= 3.9, < 3.13 (tested with 3.11)
+- **Python**: >= 3.11 (tested with 3.11 - 3.14)
 - **Dependencies**: Automatically installed via pip
+- **Wheels**: Linux (x86-64, aarch64) and macOS 14+ on Apple Silicon. On other platforms pip builds
+  from source, which needs a C++ compiler with OpenMP (``brew install libomp`` on macOS).
+  Linux x86-64 wheels bundle the AVX2 build of MMseqs2; on CPUs without AVX2 install with
+  ``pip install --no-binary mdeepfri mdeepfri``.
 
 Installation from PyPI
 ----------------------
@@ -88,3 +92,4 @@ Verify installation:
 
     mDeepFRI --help
     python -c "import mDeepFRI; print(mDeepFRI.__version__)"
+    python -m unittest mDeepFRI.tests

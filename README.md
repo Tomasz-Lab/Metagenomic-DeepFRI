@@ -64,8 +64,9 @@ with `MMseqs2`.
 
 ## 🔧 Installation
 
-1\. Install from PyPI. Installation might take a few minutes
-due to download of MMseqs2 binaries.
+1\. Install from PyPI (Python 3.11 - 3.14). Wheels are available for Linux
+(x86-64, aarch64) and macOS 14+ on Apple Silicon. On other platforms pip builds
+from source, which needs a C++ compiler with OpenMP (`brew install libomp` on macOS).
 
 ```{code-block} bash
 pip install mdeepfri

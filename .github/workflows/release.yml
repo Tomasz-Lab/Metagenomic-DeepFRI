@@ -6,98 +6,26 @@ on:
       - v*
   workflow_dispatch:
 
-
-#   build-wheels:
-#     name: Build wheels on ${{ matrix.os }} (${{ matrix.arch }}) - ${{ matrix.python }}
-#     runs-on: ${{ matrix.runner }}
-#     strategy:
-#       matrix:
-#         os: [linux, macos]
-#         arch: [x86_64, aarch64, arm64]
-#         python: [cp311, cp312]
-#         exclude:
-#           # Linux and macOS x86_64 don't have cp312
-#           - os: linux
-#             arch: x86_64
-#             python: cp312
-#           - os: macos
-#             arch: x86_64
-#             python: cp312
-#           # macOS does not use aarch64 label (uses arm64)
-#           - os: macos
-#             arch: aarch64
-#           # Linux uses aarch64 (not arm64)
-#           - os: linux
-#             arch: arm64
-#         include:
-#           # Map configurations to runners and platforms
-#           - os: linux
-#             runner: ubuntu-22.04
-#             platform: manylinux_x86_64
-#           - os: linux
-#             arch: aarch64
-#             runner: ubuntu-22.04
-#             platform: manylinux_aarch64
-#           - os: macos
-#             runner: macos-latest
-#             platform: macosx_x86_64
-#           - os: macos
-#             arch: arm64
-#             runner: macos-latest
-#             platform: macosx_arm64
-#     steps:
-#     - uses: actions/checkout@v4
-
-#     # Set up QEMU for cross-platform builds (Linux aarch64)
-#     - name: Set up QEMU
-#       if: matrix.os == 'linux' && matrix.arch == 'aarch64'
-#       uses: docker/setup-qemu-action@v3
-#       with:
-#         platforms: arm64
-
-#     # macOS: Install only libomp.
-#     - name: Install OpenMP (macOS)
-#       if: matrix.os == 'macos'
-#       run: |
-#         brew install llvm libomp
-
-#     - name: Build wheels
-#       uses: pypa/cibuildwheel@v2.21.3
-#       env:
-#         CIBW_BUILD: ${{ matrix.python }}-${{ matrix.platform }}
-#         CIBW_ARCHS: ${{ matrix.arch }}
-#         CIBW_BEFORE_ALL: ${{ matrix.os == 'linux' && 'yum install -y bzip2-devel xz-devel libgomp' || '' }}
-#         CIBW_BEFORE_ALL_MACOS: brew install libomp
-#         CIBW_BEFORE_BUILD: pip install cython
-#         CIBW_TEST_COMMAND: python -m unittest mDeepFRI.tests -vv
-#         CIBW_BUILD_VERBOSITY: 2
-#         CIBW_TEST_REQUIRES: importlib-resources
-#         MACOSX_DEPLOYMENT_TARGET: ${{ matrix.os == 'macos' && '15' || '' }}
-#         CIBW_ENVIRONMENT_MACOS: >
-#           HOMEBREW_PREFIX=$(brew --prefix)
-#           SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
-#           CC=${HOMEBREW_PREFIX}/opt/llvm/bin/clang
-#           CXX=${HOMEBREW_PREFIX}/opt/llvm/bin/clang++
-#           CFLAGS="-Xpreprocessor -fopenmp -I${HOMEBREW_PREFIX}/opt/libomp/include -isysroot ${SDKROOT}"
-#           CXXFLAGS="-Xpreprocessor -fopenmp -I${HOMEBREW_PREFIX}/opt/libomp/include -isysroot ${SDKROOT}"
-#           LDFLAGS="-L${HOMEBREW_PREFIX}/opt/libomp/lib -lomp"
-#           OpenMP_ROOT=${HOMEBREW_PREFIX}/opt/libomp
-#           OpenMP_C_FLAGS="-Xpreprocessor -fopenmp -I${HOMEBREW_PREFIX}/opt/libomp/include"
-#           OpenMP_C_LIB_NAMES="omp"
-#           OpenMP_CXX_FLAGS="-Xpreprocessor -fopenmp -I${HOMEBREW_PREFIX}/opt/libomp/include"
-#           OpenMP_CXX_LIB_NAMES="omp"
-#           OpenMP_omp_LIBRARY=${HOMEBREW_PREFIX}/opt/libomp/lib/libomp.dylib
-#           PATH="${HOMEBREW_PREFIX}/opt/llvm/bin:${HOMEBREW_PREFIX}/bin:/usr/sbin:$PATH"
-#       with:
-#         output-dir: dist
-
-#     - uses: actions/upload-artifact@v4
-#       with:
-#         name: wheel-${{ matrix.os }}-${{ matrix.arch }}-${{ matrix.python }}
-#         path: dist/*
-#         retention-days: 7
-
 jobs:
+  wheels:
+    runs-on: ${{ matrix.os }}
+    name: Build wheels - ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-14]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Build and test wheels
+      uses: pypa/cibuildwheel@v4.2.1
+      with:
+        output-dir: dist
+    - name: Store built wheels
+      uses: actions/upload-artifact@v4
+      with:
+        name: wheels-${{ matrix.os }}
+        path: dist/*
+        retention-days: 7
+
   sdist:
     runs-on: ubuntu-latest
     name: Build source distribution
@@ -146,10 +74,12 @@ jobs:
   upload:
     environment: PyPI
     runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags')
     permissions:
       id-token: write
     name: Upload to PyPI
     needs:
+    - wheels
     - sdist
     - test-sdist
     steps:
@@ -159,7 +89,6 @@ jobs:
         path: dist
         merge-multiple: true
     - uses: pypa/gh-action-pypi-publish@release/v1
-      if: startsWith(github.ref, 'refs/tags')
 
   release:
     environment: GitHub Releases

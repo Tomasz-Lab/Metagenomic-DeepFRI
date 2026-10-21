@@ -74,6 +74,15 @@ include = ["mDeepFRI", "mDeepFRI.*"]
 [tool.setuptools.package-data]
 "mDeepFRI" = ["assets/*.pkl", "assets/*.tsv", "tests/data/*"]
 
+[tool.cibuildwheel]
+build = "cp311-* cp312-* cp313-* cp314-*"
+skip = "*-musllinux_*"
+test-command = "python -m unittest mDeepFRI.tests"
+
+[tool.cibuildwheel.macos]
+before-all = "brew install libomp"
+environment = { MACOSX_DEPLOYMENT_TARGET = "14.0" }
+
 [tool.ruff]
 line-length = 120
 
