@@ -59,7 +59,7 @@ with `MMseqs2`.
 
 ## 📦 Requirements
 
-- **Python:** >= 3.11, < 3.13 (tested with 3.11)
+- **Python:** >= 3.11, tested with 3.11 - 3.14 on Linux x86-64 and macOS (Apple Silicon)
 - **Dependencies:** Automatically installed via pip
 
 ## 🔧 Installation

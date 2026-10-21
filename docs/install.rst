@@ -9,7 +9,7 @@ Installation
 Requirements
 ------------
 
-- **Python**: >= 3.11 (tested with 3.11 - 3.14)
+- **Python**: >= 3.11, tested with 3.11 - 3.14 on Linux x86-64 and macOS (Apple Silicon)
 - **Dependencies**: Automatically installed via pip
 - **Wheels**: Linux x86-64 and macOS 14+ on Apple Silicon. On Intel Macs pip builds from source,
   which needs a C++ compiler with OpenMP (``brew install libomp``). Linux aarch64 is not supported,
