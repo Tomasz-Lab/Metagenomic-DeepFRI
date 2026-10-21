@@ -26,6 +26,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - runs aborting when a PDB template cannot be downloaded or parsed - the template is now skipped with a warning
 - MMseqs2 results with a single hit, no hits or numeric-like identifiers - identifiers stay strings and empty results keep their header
 - `search-databases` failing on unexpected keyword arguments
+- test data missing from the package, failing `python -m unittest mDeepFRI.tests` on an installed copy
 
 ## [1.2.0] - 2026-08-10
 
