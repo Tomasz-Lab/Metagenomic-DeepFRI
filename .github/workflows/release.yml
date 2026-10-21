@@ -125,7 +125,7 @@ jobs:
     - sdist
     strategy:
       matrix:
-        python-version: ['3.11', '3.12']
+        python-version: ['3.11', '3.12', '3.13', '3.14']
     steps:
     - name: Setup Python ${{ matrix.python-version }}
       uses: actions/setup-python@v5
