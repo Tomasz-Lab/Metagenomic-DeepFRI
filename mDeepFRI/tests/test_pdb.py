@@ -1,9 +1,11 @@
 import pathlib
 import unittest
+from tempfile import TemporaryDirectory
 from unittest import mock
 
 import requests
 
+import mDeepFRI
 from mDeepFRI.pdb import create_pdb_mmseqs, get_pdb_seq_coords
 
 STRUCTURE = pathlib.Path(
@@ -16,6 +18,22 @@ class TestPDB(unittest.TestCase):
 
         self.assertTrue(pathlib.Path(pdb100.sequence_db).exists())
         self.assertTrue(pathlib.Path(pdb100.mmseqs_db).exists())
+
+    def test_interrupted_download_is_not_reused(self):
+        def interrupted_download(url, path):
+            pathlib.Path(path).write_bytes(b"partial")
+            raise requests.ConnectionError("connection reset")
+
+        with TemporaryDirectory() as tmp:
+            package_path = str(pathlib.Path(tmp) / "mDeepFRI")
+            with mock.patch.object(mDeepFRI, "__path__", [package_path]), \
+                    mock.patch("mDeepFRI.pdb.download_file",
+                               side_effect=interrupted_download):
+                with self.assertRaises(requests.ConnectionError):
+                    create_pdb_mmseqs()
+
+            self.assertFalse(
+                (pathlib.Path(tmp) / "pdb100_230517.fasta.gz").exists())
 
 
 class TestGetPDBSeqCoords(unittest.TestCase):

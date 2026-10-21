@@ -42,17 +42,19 @@ def create_pdb_mmseqs(threads: int = 1):
     compressed_path = pdb100_path.with_suffix(".fasta.gz")
 
     if not (compressed_path).exists():
-        download_file(PDB100, compressed_path)
+        partial_path = pdb100_path.with_suffix(".partial.gz")
+        download_file(PDB100, partial_path)
 
         # re-compress with bgzip (tabix_compress)
-        with gzip.open(compressed_path,
+        with gzip.open(partial_path,
                        "rb") as f_in, open(uncompressed_path, "wb") as f_out:
             f_out.write(f_in.read())
 
-        tabix_compress(uncompressed_path, compressed_path, force=True)
+        tabix_compress(uncompressed_path, partial_path, force=True)
 
         # remove uncompressed
         uncompressed_path.unlink()
+        partial_path.replace(compressed_path)
 
     # create an MMSeqs database from PDB100
     # in a build directory

@@ -33,6 +33,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `search-databases` failing on unexpected keyword arguments
 - test data missing from the package, failing `python -m unittest mDeepFRI.tests` on an installed copy
 - downloads hanging indefinitely when a host does not respond
+- an interrupted PDB100 download or re-compression leaving a truncated database that later runs reused
 - alignments failing on Apple Silicon with `no supported SIMD backend available` - PyOpal's macOS arm64 wheels do not enable their NEON backend
 - installs on macOS bundling a Linux MMseqs2 binary, Linux aarch64 installs bundling an x86-64 FoldComp binary, and a dead MMseqs2 URL for ppc64le
 
