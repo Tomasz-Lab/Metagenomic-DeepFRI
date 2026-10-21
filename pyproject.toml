@@ -1,6 +1,6 @@
 [project]
 name = "mDeepFRI"
-version = "1.2.0"
+version = "1.3.0"
 description = "Pipeline for searching and aligning contact maps for proteins, and function prediction with DeepFRI."
 readme = { file = "README.md", content-type = "text/markdown" }
 license = "BSD-3-Clause"
@@ -10,13 +10,15 @@ license-files = [
 authors = [
     { name = "Valentyn Bezshapkin", email = "valentyn.bezshapkin@micro.biol.ethz.ch" }
 ]
-requires-python = ">=3.11,<3.13"
+requires-python = ">=3.11"
 keywords = ["bioinformatics", "protein", "function", "deep-learning"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Programming Language :: Cython",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: Implementation :: CPython",
     "Operating System :: MacOS",
     "Operating System :: POSIX :: Linux",
@@ -25,14 +27,14 @@ classifiers = [
 dependencies = [
     "click ~=8.0",
     "numpy ~=2.3",
-    "biotite >=1.3",
+    "biotite >=1.3,<3",
     "pysam >=0.18",
     "pyopal ~=0.7",
-    "foldcomp",
+    "foldcomp >=0.1,<2",
     "tqdm",
     "onnxruntime ~=1.26.0",
-    "obonet >=0.3",
-    "networkx >=2.6",
+    "obonet >=0.3,<2",
+    "networkx >=2.6,<4",
 ]
 
 [project.urls]
@@ -70,7 +72,16 @@ include-package-data = true
 include = ["mDeepFRI", "mDeepFRI.*"]
 
 [tool.setuptools.package-data]
-"mDeepFRI" = ["assets/*.pkl", "assets/*.tsv"]
+"mDeepFRI" = ["assets/*.pkl", "assets/*.tsv", "tests/data/*"]
+
+[tool.cibuildwheel]
+build = "cp311-* cp312-* cp313-* cp314-*"
+skip = "*-musllinux_*"
+test-command = "python -m unittest mDeepFRI.tests"
+
+[tool.cibuildwheel.macos]
+before-all = "brew install libomp"
+environment = { MACOSX_DEPLOYMENT_TARGET = "14.0" }
 
 [tool.ruff]
 line-length = 120

@@ -103,7 +103,7 @@ def download_file(url, path):
         None
     """
 
-    with requests.get(url, stream=True) as r:
+    with requests.get(url, stream=True, timeout=60) as r:
         # check response and raise error
         try:
             r.raise_for_status()

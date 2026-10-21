@@ -63,19 +63,24 @@ def _detect_cpu_features():
         return "sse2"
 
 
+MMSEQS_ARCHIVE = ("https://mmseqs.com/archive/"
+                  "bd01c2229f027d8d8e61947f44d11ef1a7669212")
+FOLDCOMP_RELEASE = ("https://github.com/steineggerlab/foldcomp/releases/"
+                    "download/v0.1.0")
+
 FOLDCOMP_BINARIES = {
-    "linux_or_android":
-    "https://mmseqs.com/foldcomp/foldcomp-linux-x86_64.tar.gz",
-    "aarch64": "https://mmseqs.com/foldcomp/foldcomp-linux-arm64.tar.gz",
-    "macos": "https://mmseqs.com/foldcomp/foldcomp-macos-universal.tar.gz"
+    "linux_or_android": f"{FOLDCOMP_RELEASE}/foldcomp-linux-x86_64.tar.gz",
+    "aarch64": f"{FOLDCOMP_RELEASE}/foldcomp-linux-arm64.tar.gz",
+    "macos": f"{FOLDCOMP_RELEASE}/foldcomp-macos-universal.tar.gz"
 }
 
 MMSEQS_BINARIES = {
-    "avx2": "https://mmseqs.com/latest/mmseqs-linux-avx2.tar.gz",
-    "sse41": "https://mmseqs.com/latest/mmseqs-linux-sse41.tar.gz",
-    "sse2": "https://mmseqs.com/latest/mmseqs-linux-sse2.tar.gz",
-    "aarch64": "https://mmseqs.com/latest/mmseqs-linux-arm64.tar.gz",
-    "ppc": "https://mmseqs.com/latest/mmseqs-linux-ppc64le-power8.tar.gz"
+    "avx2": f"{MMSEQS_ARCHIVE}/mmseqs-linux-avx2.tar.gz",
+    "sse41": f"{MMSEQS_ARCHIVE}/mmseqs-linux-sse41.tar.gz",
+    "sse2": f"{MMSEQS_ARCHIVE}/mmseqs-linux-sse2.tar.gz",
+    "aarch64": f"{MMSEQS_ARCHIVE}/mmseqs-linux-arm64.tar.gz",
+    "ppc": f"{MMSEQS_ARCHIVE}/mmseqs-linux-ppc64le-power9.tar.gz",
+    "macos": f"{MMSEQS_ARCHIVE}/mmseqs-osx-universal.tar.gz"
 }
 
 
@@ -84,14 +89,15 @@ def read(fname):
 
 
 def _download_file(url, path):
-    with requests.get(url, stream=True) as r:
+    with requests.get(url, stream=True, timeout=60) as r:
+        r.raise_for_status()
         with open(path, 'wb') as f:
             shutil.copyfileobj(r.raw, f)
 
 
 def _download_foldcomp(system, cpu, output_path):
     # select appropriate binary
-    if cpu == "aarch64" and system == "linux":
+    if cpu == "aarch64" and system == "linux_or_android":
         build = "aarch64"
     else:
         build = system
@@ -114,9 +120,11 @@ def _download_foldcomp(system, cpu, output_path):
 
 def _download_mmseqs(system, cpu, features, output_path):
     # select appropriate binary
-    if cpu == "aarch64":
+    if system == "macos":
+        build = "macos"
+    elif cpu == "aarch64":
         build = "aarch64"
-    elif cpu == "ppc" and system == "linux":
+    elif cpu == "ppc":
         build = "ppc"
     else:
         build = features

@@ -9,15 +9,24 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-[Unreleased]: https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/compare/v1.3.0...HEAD
+
+## [1.3.0] - 2026-10-21
+
+[1.3.0]: https://github.com/Tomasz-Lab/Metagenomic-DeepFRI/compare/v1.2.0...v1.3.0
 
 ### Added
 
+- wheels for Linux x86-64 and macOS on Apple Silicon, Python 3.11 - 3.14
 - `--alignment-min-identity` and `--alignment-min-coverage` parameters - discard structural templates whose global alignment falls below the thresholds; off by default
 - `benchmark` command - runs structure retrieval, contact map transfer and prediction for several MMseqs2 identity bins and `--generate-contacts` values from one database search, with per-stage wall times in `timing.tsv`
 
 ### Changed
 
+- support for Python 3.13 and 3.14; `requires-python` no longer has an upper bound
+- `biotite`, `foldcomp`, `obonet` and `networkx` are bounded below their next major release
+- PDB100 is downloaded from opendata.mmseqs.org instead of wwwuser.gwdg.de, which refuses connections from some networks; the file is identical
+- MMseqs2 is pinned to build `bd01c22` and FoldComp to v0.1.0 instead of the latest nightly builds
 - `predict_protein_function` is composed of reusable stages: `align_database_hits`, `select_templates`, `build_contact_maps` and `predict_from_contact_maps`
 
 ### Fixed
@@ -26,6 +35,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - runs aborting when a PDB template cannot be downloaded or parsed - the template is now skipped with a warning
 - MMseqs2 results with a single hit, no hits or numeric-like identifiers - identifiers stay strings and empty results keep their header
 - `search-databases` failing on unexpected keyword arguments
+- test data missing from the package, failing `python -m unittest mDeepFRI.tests` on an installed copy
+- downloads hanging indefinitely when a host does not respond
+- an interrupted PDB100 download or re-compression leaving a truncated database that later runs reused
+- alignments failing on Apple Silicon with `no supported SIMD backend available` - PyOpal's macOS arm64 wheels do not enable their NEON backend
+- installs on macOS bundling a Linux MMseqs2 binary, Linux aarch64 installs bundling an x86-64 FoldComp binary, and a dead MMseqs2 URL for ppc64le
 
 ## [1.2.0] - 2026-08-10
 

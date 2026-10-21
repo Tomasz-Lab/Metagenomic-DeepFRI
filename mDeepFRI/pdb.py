@@ -31,7 +31,7 @@ def create_pdb_mmseqs(threads: int = 1):
         Database: PDB100 database.
     """
 
-    PDB100 = "https://wwwuser.gwdg.de/~compbiol/colabfold/pdb100_230517.fasta.gz"
+    PDB100 = "https://opendata.mmseqs.org/colabfold/pdb100_230517.fasta.gz"
     # check if pdb exists in a build dir
     build_dir = Path(mDeepFRI.__path__[0]).parent
     pdb100_path = Path(build_dir / "pdb100_230517.fasta.gz")
@@ -42,17 +42,19 @@ def create_pdb_mmseqs(threads: int = 1):
     compressed_path = pdb100_path.with_suffix(".fasta.gz")
 
     if not (compressed_path).exists():
-        download_file(PDB100, compressed_path)
+        partial_path = pdb100_path.with_suffix(".partial.gz")
+        download_file(PDB100, partial_path)
 
         # re-compress with bgzip (tabix_compress)
-        with gzip.open(compressed_path,
+        with gzip.open(partial_path,
                        "rb") as f_in, open(uncompressed_path, "wb") as f_out:
             f_out.write(f_in.read())
 
-        tabix_compress(uncompressed_path, compressed_path, force=True)
+        tabix_compress(uncompressed_path, partial_path, force=True)
 
         # remove uncompressed
         uncompressed_path.unlink()
+        partial_path.replace(compressed_path)
 
     # create an MMSeqs database from PDB100
     # in a build directory

@@ -59,13 +59,14 @@ with `MMseqs2`.
 
 ## 📦 Requirements
 
-- **Python:** >= 3.11, < 3.13 (tested with 3.11)
+- **Python:** >= 3.11, tested with 3.11 - 3.14 on Linux x86-64 and macOS (Apple Silicon)
 - **Dependencies:** Automatically installed via pip
 
 ## 🔧 Installation
 
-1\. Install from PyPI. Installation might take a few minutes
-due to download of MMseqs2 binaries.
+1\. Install from PyPI (Python 3.11 - 3.14). Wheels are available for Linux x86-64
+and macOS 14+ on Apple Silicon. On Intel Macs pip builds from source, which needs
+a C++ compiler with OpenMP (`brew install libomp`).
 
 ```{code-block} bash
 pip install mdeepfri
