@@ -364,22 +364,9 @@ their global `alignments/` with gapped sequences and one
 
 Metagenomic-DeepFRI is a scientific software. If you use it
 in an academic work, please cite the papers behind it:
-
-- Gligorijević et al. "Structure-based protein function prediction using
-  graph convolutional networks" Nat. Comms. (2021).
-  <https://doi.org/10.1038/s41467-021-23303-9>
-- Steinegger & Söding "MMseqs2 enables sensitive protein
-  sequence searching for the analysis of massive data sets"
-  Nat. Biotechnol. (2017) <https://doi.org/10.1038/nbt.3988>
-- Kim, Midrita & Steinegger "Foldcomp: a library and format for compressing
-  and indexing large protein structure sets" Bioinformatics (2023)
-  <https://doi.org/10.1093/bioinformatics/btad153>
-- Maranga et al. "Comprehensive Functional Annotation of Metagenomes and
-  Microbial Genomes Using a Deep Learning-Based Method" mSystems (2023)
-  <https://doi.org/10.1128/msystems.01178-22>
-- Szczerbiak P et al. "Large protein databases reveal structural complementarity
-  and functional locality". Nat. Commun. (2025).
-  <https://doi.org/10.1038/s41467-025-63250-3>
+- Bezshapkin, Valentyn, et al. "Scaling and democratising 
+structure-based protein function prediction with metagenomic-deepFRI." bioRxiv (2026): 2026-04.
+<https://doi.org/10.64898/2026.04.27.720983>
 
 ## 💭 Feedback
 
